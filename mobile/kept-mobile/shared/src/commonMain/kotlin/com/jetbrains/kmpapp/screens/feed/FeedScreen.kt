@@ -28,7 +28,7 @@ fun FeedScreen() {
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Text(
-            "속보 피드",
+            "관심사 피드",
             style = MaterialTheme.typography.headlineLarge
         ); TextButton(onClick = vm::refresh) { Text("새로고침") }
     }; when (val current = state) {
@@ -52,11 +52,10 @@ fun FeedScreen() {
                     ), shape = RoundedCornerShape(16.dp)
                 ) {
                     Column(Modifier.padding(16.dp)) {
-                        Text(
-                            item.provider.substringAfter(':').replaceFirstChar { it.uppercase() },
-                            style = MaterialTheme.typography.labelMedium,
-                            color = KeypColors.Primary
-                        ); Spacer(Modifier.height(8.dp)); Text(
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(item.provider.substringAfter(':').replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelMedium, color = KeypColors.Primary)
+                            Text(formatToMinute(item.createdAt), style = MaterialTheme.typography.labelMedium, color = KeypColors.InkSoft)
+                        }; Spacer(Modifier.height(8.dp)); Text(
                         item.title,
                         style = MaterialTheme.typography.titleMedium
                     ); item.summary?.let {
@@ -93,3 +92,5 @@ fun FeedScreen() {
     }
     }
 }
+
+private fun formatToMinute(iso: String): String = iso.take(16).replace('T', ' ')

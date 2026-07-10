@@ -24,7 +24,7 @@ class SearchViewModel(private val repository: SubscriptionRepository) : ViewMode
     val uiState = _uiState.asStateFlow()
 
     fun onTextChange(text: String) {
-        _uiState.value = SearchUiState.Editing(text.take(2000))
+        _uiState.value = SearchUiState.Editing(text.take(200))
     }
 
     fun submit() {

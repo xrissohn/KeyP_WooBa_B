@@ -40,7 +40,7 @@ private fun SearchEditingContent(state: SearchUiState, vm: SearchViewModel, onBa
                 onValueChange = vm::onTextChange,
                 modifier = Modifier.fillMaxWidth().height(180.dp),
                 placeholder = { Text("예: 서울 Java Spring 백엔드 개발자 채용") },
-                supportingText = { Text("${text.length}/2000") },
+                supportingText = { Text("${text.length}/200") },
                 isError = state is SearchUiState.Error,
                 enabled = state !is SearchUiState.Submitting,
             )

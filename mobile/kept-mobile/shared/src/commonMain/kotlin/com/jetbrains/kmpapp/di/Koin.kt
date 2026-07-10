@@ -13,6 +13,7 @@ import com.jetbrains.kmpapp.screens.feed.FeedViewModel
 import com.jetbrains.kmpapp.screens.home.HomeViewModel
 import com.jetbrains.kmpapp.screens.mypage.MyPageViewModel
 import com.jetbrains.kmpapp.screens.search.SearchViewModel
+import com.jetbrains.kmpapp.screens.settings.SettingsViewModel
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -67,6 +68,7 @@ val viewModelModule = module {
     viewModelOf(::HomeViewModel)
     viewModelOf(::SearchViewModel)
     viewModelOf(::MyPageViewModel)
+    viewModelOf(::SettingsViewModel)
 }
 
 fun initKoin() {
