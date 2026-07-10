@@ -32,17 +32,16 @@ class SubscriptionRepository(private val api: KeypApi) {
     }
 }
 
-class FeedRepository(private val api: KeypApi, private val cursorStore: CursorStore) {
-    private var cursor: Long? = cursorStore.get()
+class FeedRepository(private val api: KeypApi) {
     private val _items = MutableStateFlow<List<FeedItem>>(emptyList())
     val items = _items.asStateFlow()
 
     suspend fun refresh() {
+        var cursor: Long? = null
         var hasMore = true
         while (hasMore) {
             val page = api.listEvents(cursor, limit = 50)
             cursor = page.nextCursor
-            cursorStore.set(page.nextCursor)
             _items.value = (page.events.map {
                 FeedItem(it.cursor.toString(), it.item.provider, it.item.title, it.item.summary, it.item.url, it.createdAt)
             } + _items.value).distinctBy { it.id }

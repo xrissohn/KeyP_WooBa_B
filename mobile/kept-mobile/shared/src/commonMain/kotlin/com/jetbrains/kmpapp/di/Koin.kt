@@ -1,7 +1,6 @@
 package com.jetbrains.kmpapp.di
 
 import com.jetbrains.kmpapp.data.ApiConfig
-import com.jetbrains.kmpapp.data.CursorStore
 import com.jetbrains.kmpapp.data.DeviceRepository
 import com.jetbrains.kmpapp.data.FeedRepository
 import com.jetbrains.kmpapp.data.GENERATED_BASE_URL
@@ -9,7 +8,6 @@ import com.jetbrains.kmpapp.data.KeypApi
 import com.jetbrains.kmpapp.data.KtorKeypApi
 import com.jetbrains.kmpapp.data.SubscriptionRepository
 import com.jetbrains.kmpapp.data.PushTokenProvider
-import com.jetbrains.kmpapp.data.createCursorStore
 import com.jetbrains.kmpapp.data.createPushTokenProvider
 import com.jetbrains.kmpapp.screens.feed.FeedViewModel
 import com.jetbrains.kmpapp.screens.home.HomeViewModel
@@ -19,11 +17,17 @@ import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.plugins.logging.LogLevel
+import io.ktor.client.plugins.logging.Logger
+import io.ktor.client.plugins.logging.Logging
+import io.ktor.client.plugins.logging.LoggingFormat
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import org.koin.core.context.startKoin
 import org.koin.core.module.dsl.viewModelOf
 import org.koin.dsl.module
+
+private const val TAG = "KeypApi"
 
 val dataModule = module {
     single {
@@ -40,14 +44,22 @@ val dataModule = module {
             install(HttpTimeout) {
                 requestTimeoutMillis = 15_000
             }
+            install(Logging) {
+                logger = object : Logger {
+                    override fun log(message: String) {
+                        println("[$TAG] $message")
+                    }
+                }
+                level = LogLevel.ALL
+                format = LoggingFormat.OkHttp
+            }
         }
     }
 
     single<KeypApi> { KtorKeypApi(get()) }
-    single<CursorStore> { createCursorStore() }
     single<PushTokenProvider> { createPushTokenProvider() }
     single { SubscriptionRepository(get()) }
-    single { FeedRepository(get(), get()) }
+    single { FeedRepository(get()) }
     single { DeviceRepository(get()) }
 }
 

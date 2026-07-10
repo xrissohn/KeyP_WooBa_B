@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -18,6 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.koin.core.context.GlobalContext
 
+private const val TAG = "KeypPush"
 const val PUSH_CHANNEL_ID = "keyp_default"
 private const val PUSH_CHANNEL_NAME = "KeyP 알림"
 
@@ -36,16 +38,19 @@ class KeypFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
+        Log.d(TAG, "onNewToken: ${token.take(16)}...")
         val koin = GlobalContext.get()
         val devices = koin.get<DeviceRepository>()
         val tokenProvider = koin.get<PushTokenProvider>()
         scope.launch {
             runCatching { devices.setEnabled(true, token, tokenProvider.platform) }
+                .onFailure { Log.e(TAG, "failed to register refreshed token", it) }
         }
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
+        Log.d(TAG, "onMessageReceived: data=${message.data} notification=${message.notification?.title}")
         val title = message.notification?.title ?: message.data["title"] ?: getString(R.string.app_name)
         val body = message.notification?.body ?: message.data["body"] ?: return
         showNotification(title, body, message.data["url"])

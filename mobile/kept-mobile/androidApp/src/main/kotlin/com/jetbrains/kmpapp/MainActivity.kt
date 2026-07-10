@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -14,6 +15,8 @@ import com.jetbrains.kmpapp.data.DeviceRepository
 import com.jetbrains.kmpapp.data.PushTokenProvider
 import kotlinx.coroutines.launch
 import org.koin.core.context.GlobalContext
+
+private const val TAG = "KeypPush"
 
 class MainActivity : ComponentActivity() {
     private val requestNotificationPermission =
@@ -43,7 +46,10 @@ class MainActivity : ComponentActivity() {
         val tokenProvider = koin.get<PushTokenProvider>()
         lifecycleScope.launch {
             val token = tokenProvider.currentToken()
+            Log.d(TAG, "fetched FCM token: ${token?.take(16)}...")
             runCatching { devices.setEnabled(true, token, tokenProvider.platform) }
+                .onSuccess { Log.d(TAG, "registered device with backend") }
+                .onFailure { Log.e(TAG, "failed to register device", it) }
         }
     }
 }
