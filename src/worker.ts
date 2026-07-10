@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AppDatabase } from "./db.js";
 import type { ConnectorRegistry } from "./connectors/index.js";
 import type { CollectedItem, SourceContext, SourcePlan, StoredSubscription } from "./types.js";
@@ -9,6 +10,7 @@ export class PollWorker {
   private ticking = false;
   private readonly running = new Set<string>();
   private readonly sourceRequests = new Map<string, Promise<CollectedItem[]>>();
+  private readonly workerId = randomUUID();
 
   constructor(
     private readonly db: AppDatabase,
@@ -25,7 +27,6 @@ export class PollWorker {
     if (this.timer) return;
     void this.tick();
     this.timer = setInterval(() => void this.tick(), this.tickSeconds * 1000);
-    this.timer.unref();
   }
 
   stop(): void {
@@ -37,7 +38,12 @@ export class PollWorker {
     if (this.ticking) return;
     this.ticking = true;
     try {
-      const due = this.db.listDueSubscriptions(this.clock().toISOString());
+      const now = this.clock();
+      const due = this.db.claimDueSubscriptions({
+        owner: this.workerId,
+        now: now.toISOString(),
+        leaseUntil: new Date(now.getTime() + config.schedulerLeaseSeconds * 1000).toISOString(),
+      });
       let offset = 0;
       const consume = async () => {
         while (offset < due.length) {

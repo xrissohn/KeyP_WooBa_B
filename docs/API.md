@@ -30,6 +30,8 @@
 | `DELETE` | `/v1/devices` | User | FCM token 해제 |
 | `POST` | `/v1/webhooks/{subscriptionId}/{source}` | Webhook | 외부 이벤트 수신 |
 
+검색 계획의 provider는 현재 `naver`, `x`, `rss`, `webhook`을 지원합니다.
+
 ## Polling 예시
 
 ```bash

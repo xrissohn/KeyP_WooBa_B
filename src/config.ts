@@ -9,28 +9,30 @@ function nonNegativeInt(name: string, fallback: number): number {
   return Math.max(0, int(name, fallback));
 }
 
+function appRole(): "all" | "api" | "worker" {
+  const value = process.env.APP_ROLE ?? "all";
+  return value === "api" || value === "worker" ? value : "all";
+}
+
 export const config = {
+  appRole: appRole(),
   port: int("PORT", 3000),
   host: process.env.HOST ?? "127.0.0.1",
   databasePath: resolve(process.env.DATABASE_PATH ?? "./data/radar.sqlite"),
   pollIntervalSeconds: Math.max(60, int("POLL_INTERVAL_SECONDS", 60)),
   workerTickSeconds: Math.max(1, int("WORKER_TICK_SECONDS", 5)),
   workerConcurrency: Math.max(1, Math.min(20, int("WORKER_CONCURRENCY", 5))),
+  schedulerLeaseSeconds: Math.max(30, int("SCHEDULER_LEASE_SECONDS", 300)),
   providers: {
     naver: {
       minIntervalSeconds: Math.max(60, int("NAVER_MIN_INTERVAL_SECONDS", 60)),
       dailyBudget: nonNegativeInt("NAVER_DAILY_BUDGET", 24_000),
       budgetTimeZone: process.env.NAVER_BUDGET_TIME_ZONE ?? "Asia/Seoul",
     },
-    google: {
-      minIntervalSeconds: Math.max(60, int("GOOGLE_MIN_INTERVAL_SECONDS", 900)),
-      dailyBudget: nonNegativeInt("GOOGLE_DAILY_BUDGET", 90),
-      budgetTimeZone: process.env.GOOGLE_BUDGET_TIME_ZONE ?? "America/Los_Angeles",
-    },
-    saramin: {
-      minIntervalSeconds: Math.max(60, int("SARAMIN_MIN_INTERVAL_SECONDS", 300)),
-      dailyBudget: nonNegativeInt("SARAMIN_DAILY_BUDGET", 450),
-      budgetTimeZone: process.env.SARAMIN_BUDGET_TIME_ZONE ?? "Asia/Seoul",
+    x: {
+      minIntervalSeconds: Math.max(60, int("X_MIN_INTERVAL_SECONDS", 60)),
+      dailyBudget: nonNegativeInt("X_DAILY_BUDGET", 450),
+      budgetTimeZone: process.env.X_BUDGET_TIME_ZONE ?? "UTC",
     },
     rss: {
       minIntervalSeconds: Math.max(60, int("RSS_MIN_INTERVAL_SECONDS", 300)),
@@ -48,12 +50,9 @@ export const config = {
     clientSecret: process.env.NAVER_CLIENT_SECRET,
     baseUrl: process.env.NAVER_SEARCH_BASE_URL ?? "https://openapi.naver.com/v1/search",
   },
-  google: {
-    apiKey: process.env.GOOGLE_SEARCH_API_KEY,
-    engineId: process.env.GOOGLE_SEARCH_ENGINE_ID,
-  },
-  saramin: {
-    accessKey: process.env.SARAMIN_ACCESS_KEY,
+  x: {
+    bearerToken: process.env.X_BEARER_TOKEN,
+    baseUrl: process.env.X_SEARCH_BASE_URL ?? "https://api.x.com/2/tweets/search/recent",
   },
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID,

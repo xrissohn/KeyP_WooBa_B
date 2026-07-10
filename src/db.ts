@@ -53,7 +53,9 @@ export class AppDatabase {
         active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         next_run_at TEXT NOT NULL,
-        last_run_at TEXT
+        last_run_at TEXT,
+        lease_owner TEXT,
+        lease_until TEXT
       );
 
       CREATE INDEX IF NOT EXISTS subscriptions_due_idx
@@ -138,10 +140,90 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS push_deliveries_due_idx
         ON push_deliveries(event_id, status, next_attempt_at);
     `);
+    this.ensureColumn("subscriptions", "lease_owner", "TEXT");
+    this.ensureColumn("subscriptions", "lease_until", "TEXT");
+    this.sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS subscriptions_lease_idx
+        ON subscriptions(active, next_run_at, lease_until);
+    `);
+  }
+
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const columns = this.sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!columns.some((item) => item.name === column)) {
+      this.sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
   }
 
   close(): void {
     this.sqlite.close();
+  }
+
+  reconcileProviders(supportedProviders: string[]): {
+    updatedSubscriptions: number;
+    deactivatedSubscriptions: number;
+    removedSourceCaches: number;
+    removedOrphanStates: number;
+  } {
+    const supported = new Set(supportedProviders);
+    let updatedSubscriptions = 0;
+    let deactivatedSubscriptions = 0;
+    let removedSourceCaches = 0;
+    let removedOrphanStates = 0;
+    this.sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      const subscriptions = this.sqlite.prepare("SELECT id, plan_json FROM subscriptions").all() as Array<{
+        id: string;
+        plan_json: string;
+      }>;
+      const updatePlan = this.sqlite.prepare("UPDATE subscriptions SET plan_json = ? WHERE id = ?");
+      const deactivate = this.sqlite.prepare(`
+        UPDATE subscriptions
+        SET active = 0, lease_owner = NULL, lease_until = NULL
+        WHERE id = ?
+      `);
+      for (const subscription of subscriptions) {
+        const plan = JSON.parse(subscription.plan_json) as SearchPlan;
+        const sources = plan.sources.filter((source) => supported.has(source.provider));
+        if (sources.length === plan.sources.length) continue;
+        if (sources.length === 0) {
+          deactivate.run(subscription.id);
+          deactivatedSubscriptions++;
+        } else {
+          updatePlan.run(JSON.stringify({ ...plan, sources }), subscription.id);
+          updatedSubscriptions++;
+        }
+      }
+
+      const caches = this.sqlite.prepare("SELECT source_key, source_json FROM source_cache").all() as Array<{
+        source_key: string;
+        source_json: string;
+      }>;
+      const deleteStates = this.sqlite.prepare("DELETE FROM source_states WHERE source_key = ?");
+      const deleteCache = this.sqlite.prepare("DELETE FROM source_cache WHERE source_key = ?");
+      for (const cache of caches) {
+        const source = JSON.parse(cache.source_json) as { provider?: string };
+        if (source.provider && supported.has(source.provider)) continue;
+        deleteStates.run(cache.source_key);
+        deleteCache.run(cache.source_key);
+        removedSourceCaches++;
+      }
+      removedOrphanStates = Number(this.sqlite.prepare(`
+        DELETE FROM source_states
+        WHERE source_key NOT IN (SELECT source_key FROM source_cache)
+      `).run().changes);
+
+      const placeholders = [...supported].map(() => "?").join(",");
+      if (placeholders) {
+        this.sqlite.prepare(`DELETE FROM provider_usage WHERE provider NOT IN (${placeholders})`)
+          .run(...supported);
+      }
+      this.sqlite.exec("COMMIT");
+      return { updatedSubscriptions, deactivatedSubscriptions, removedSourceCaches, removedOrphanStates };
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   createSubscription(input: {
@@ -179,7 +261,10 @@ export class AppDatabase {
   }
 
   deactivateSubscription(id: string, userId: string): boolean {
-    const result = this.sqlite.prepare("UPDATE subscriptions SET active = 0 WHERE id = ? AND user_id = ?")
+    const result = this.sqlite.prepare(`
+      UPDATE subscriptions SET active = 0, lease_owner = NULL, lease_until = NULL
+      WHERE id = ? AND user_id = ?
+    `)
       .run(id, userId);
     return result.changes === 1;
   }
@@ -187,7 +272,10 @@ export class AppDatabase {
   setSubscriptionActive(id: string, userId: string, active: boolean, now: string): boolean {
     const result = this.sqlite.prepare(`
       UPDATE subscriptions
-      SET active = ?, next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END
+      SET active = ?,
+          next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
+          lease_owner = NULL,
+          lease_until = NULL
       WHERE id = ? AND user_id = ?
     `).run(active ? 1 : 0, active ? 1 : 0, now, id, userId);
     return result.changes === 1;
@@ -209,9 +297,40 @@ export class AppDatabase {
     return rows.map((row) => this.mapSubscription(row));
   }
 
+  claimDueSubscriptions(input: {
+    owner: string;
+    now: string;
+    leaseUntil: string;
+    limit?: number;
+  }): StoredSubscription[] {
+    this.sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      const rows = this.sqlite.prepare(`
+        SELECT id, user_id, keyword, plan_json, active, created_at, next_run_at
+        FROM subscriptions
+        WHERE active = 1
+          AND next_run_at <= ?
+          AND (lease_until IS NULL OR lease_until <= ?)
+        ORDER BY next_run_at ASC
+        LIMIT ?
+      `).all(input.now, input.now, input.limit ?? 100) as Array<Record<string, SqliteValue>>;
+      const claim = this.sqlite.prepare(`
+        UPDATE subscriptions SET lease_owner = ?, lease_until = ? WHERE id = ?
+      `);
+      for (const row of rows) claim.run(input.owner, input.leaseUntil, String(row.id));
+      this.sqlite.exec("COMMIT");
+      return rows.map((row) => this.mapSubscription(row));
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   scheduleNext(subscriptionId: string, nextRunAt: string, lastRunAt: string): void {
     this.sqlite.prepare(`
-      UPDATE subscriptions SET next_run_at = ?, last_run_at = ? WHERE id = ?
+      UPDATE subscriptions
+      SET next_run_at = ?, last_run_at = ?, lease_owner = NULL, lease_until = NULL
+      WHERE id = ?
     `).run(nextRunAt, lastRunAt, subscriptionId);
   }
 

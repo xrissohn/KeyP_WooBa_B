@@ -7,9 +7,7 @@ interface ConfigSnapshot {
   aiKey?: string;
   naverClientId?: string;
   naverClientSecret?: string;
-  googleApiKey?: string;
-  googleEngineId?: string;
-  saraminAccessKey?: string;
+  xBearerToken?: string;
   rss: string[];
 }
 
@@ -18,9 +16,7 @@ function snapshotConfig(): ConfigSnapshot {
     aiKey: config.ai.key,
     naverClientId: config.naver.clientId,
     naverClientSecret: config.naver.clientSecret,
-    googleApiKey: config.google.apiKey,
-    googleEngineId: config.google.engineId,
-    saraminAccessKey: config.saramin.accessKey,
+    xBearerToken: config.x.bearerToken,
     rss: [...config.defaultRssFeeds],
   };
 }
@@ -29,18 +25,14 @@ function restoreConfig(snapshot: ConfigSnapshot): void {
   config.ai.key = snapshot.aiKey;
   config.naver.clientId = snapshot.naverClientId;
   config.naver.clientSecret = snapshot.naverClientSecret;
-  config.google.apiKey = snapshot.googleApiKey;
-  config.google.engineId = snapshot.googleEngineId;
-  config.saramin.accessKey = snapshot.saraminAccessKey;
+  config.x.bearerToken = snapshot.xBearerToken;
   config.defaultRssFeeds.splice(0, config.defaultRssFeeds.length, ...snapshot.rss);
 }
 
 function disableProviders(): void {
   config.naver.clientId = undefined;
   config.naver.clientSecret = undefined;
-  config.google.apiKey = undefined;
-  config.google.engineId = undefined;
-  config.saramin.accessKey = undefined;
+  config.x.bearerToken = undefined;
   config.defaultRssFeeds.splice(0);
 }
 
@@ -76,10 +68,10 @@ test("AI plans retain only configured providers", async () => {
             content: JSON.stringify({
               topic: "technology",
               normalizedKeywords: ["TypeScript"],
-              intervalSeconds: 60,
+              intervalSeconds: 3600,
               sources: [
                 { provider: "naver", vertical: "news", query: "TypeScript" },
-                { provider: "google", query: "TypeScript" },
+                { provider: "x", query: "TypeScript" },
               ],
             }),
           },
@@ -89,9 +81,22 @@ test("AI plans retain only configured providers", async () => {
 
     const result = await new SearchPlanner().create("TypeScript release");
     assert.equal(result.mode, "ai");
-    assert.deepEqual(result.plan.sources, [{ provider: "naver", vertical: "news", query: "TypeScript" }]);
+    assert.equal(result.plan.intervalSeconds, config.pollIntervalSeconds);
+    assert.deepEqual(result.plan.sources, [
+      { provider: "naver", vertical: "news", query: "TypeScript" },
+    ]);
     assert.equal(requestBody?.model, config.ai.model);
-    assert.equal((requestBody?.response_format as { type?: string }).type, "json_schema");
+    const responseFormat = requestBody?.response_format as {
+      type?: string;
+      json_schema?: { schema?: { properties?: { sources?: { items?: Record<string, unknown> } } } };
+    };
+    assert.equal(responseFormat.type, "json_schema");
+    const sourceVariants = responseFormat.json_schema?.schema?.properties?.sources?.items;
+    assert.ok(Array.isArray(sourceVariants?.anyOf));
+    assert.equal(sourceVariants?.oneOf, undefined);
+    for (const variant of sourceVariants.anyOf as Array<{ properties?: { provider?: { type?: string } } }>) {
+      assert.equal(variant.properties?.provider?.type, "string");
+    }
   } finally {
     globalThis.fetch = originalFetch;
     restoreConfig(snapshot);

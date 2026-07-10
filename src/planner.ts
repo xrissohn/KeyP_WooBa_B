@@ -19,22 +19,18 @@ const PLAN_JSON_SCHEMA = {
       minItems: 1,
       maxItems: 12,
       items: {
-        oneOf: [
+        anyOf: [
           {
             type: "object", additionalProperties: false, required: ["provider", "query", "vertical"],
-            properties: { provider: { const: "naver" }, query: { type: "string" }, vertical: { enum: ["news", "blog", "webkr"] } },
+            properties: { provider: { type: "string", const: "naver" }, query: { type: "string" }, vertical: { type: "string", enum: ["news", "blog", "webkr"] } },
           },
           {
             type: "object", additionalProperties: false, required: ["provider", "query"],
-            properties: { provider: { const: "google" }, query: { type: "string" } },
-          },
-          {
-            type: "object", additionalProperties: false, required: ["provider", "query"],
-            properties: { provider: { const: "saramin" }, query: { type: "string" } },
+            properties: { provider: { type: "string", const: "x" }, query: { type: "string" } },
           },
           {
             type: "object", additionalProperties: false, required: ["provider", "url", "query"],
-            properties: { provider: { const: "rss" }, url: { type: "string" }, query: { type: "string" } },
+            properties: { provider: { type: "string", const: "rss" }, url: { type: "string" }, query: { type: "string" } },
           },
         ],
       },
@@ -74,7 +70,7 @@ export class SearchPlanner {
                 "Convert a Korean user's monitoring interest into a conservative search plan.",
                 "Use only the providers in the schema.",
                 `Enabled providers: ${enabledProviders}. Do not select disabled providers.`,
-                "Use saramin only for employment or recruiting intent.",
+                "Use X for timely public discussion, reactions, and first-hand posts.",
                 "Use RSS only with one of the explicitly allowed URLs.",
                 "Prefer short literal queries; do not invent facts or URLs.",
                 `Allowed RSS URLs: ${enabledRss}`,
@@ -109,8 +105,7 @@ export class SearchPlanner {
     if (config.naver.clientId && config.naver.clientSecret) {
       sources.push({ provider: "naver", vertical: "news", query: cleaned });
     }
-    if (config.google.apiKey && config.google.engineId) sources.push({ provider: "google", query: cleaned });
-    if (isJob && config.saramin.accessKey) sources.push({ provider: "saramin", query: cleaned });
+    if (config.x.bearerToken) sources.push({ provider: "x", query: cleaned });
     for (const url of config.defaultRssFeeds.slice(0, 5)) {
       sources.push({ provider: "rss", url, query: cleaned });
     }
@@ -126,8 +121,7 @@ export class SearchPlanner {
   private enabledProviders(): SourcePlan["provider"][] {
     const providers: SourcePlan["provider"][] = [];
     if (config.naver.clientId && config.naver.clientSecret) providers.push("naver");
-    if (config.google.apiKey && config.google.engineId) providers.push("google");
-    if (config.saramin.accessKey) providers.push("saramin");
+    if (config.x.bearerToken) providers.push("x");
     if (config.defaultRssFeeds.length > 0) providers.push("rss");
     return providers;
   }
@@ -136,6 +130,6 @@ export class SearchPlanner {
     const enabled = new Set(this.enabledProviders());
     const sources = plan.sources.filter((source) => enabled.has(source.provider));
     if (sources.length === 0) throw new Error("AI plan did not contain an enabled provider");
-    return searchPlanSchema.parse({ ...plan, sources });
+    return searchPlanSchema.parse({ ...plan, intervalSeconds: config.pollIntervalSeconds, sources });
   }
 }
