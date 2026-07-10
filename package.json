@@ -8,6 +8,8 @@
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "test": "node --import tsx --test test/**/*.test.ts",
+    "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-include='src/**/*.ts' --test-coverage-exclude='src/index.ts' --test-coverage-lines=85 --test-coverage-branches=70 --test-coverage-functions=75 test/**/*.test.ts",
+    "ci": "pnpm typecheck && pnpm build && pnpm test:coverage",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

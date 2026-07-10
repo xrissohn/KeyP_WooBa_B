@@ -138,6 +138,10 @@ provider_usage(provider, day)       공급자 전체 일일 호출량
 ```bash
 pnpm typecheck
 pnpm test
+pnpm test:coverage
+pnpm run ci
 ```
+
+`pnpm run ci`는 typecheck, build, 전체 테스트를 순서대로 실행합니다. Coverage 기준은 line 85%, branch 70%, function 75%이며 기준 미달 시 실패합니다. GitHub Actions는 `main`, `develop`, `backend` push와 `main`, `develop` 대상 pull request에서 같은 명령을 실행합니다.
 
 현재 저장소는 단일 프로세스 MVP를 위해 Node 내장 SQLite를 사용합니다. 다중 인스턴스 운영에서는 PostgreSQL로 저장소를 이전하고, 워커는 Redis/BullMQ 또는 SQS 같은 lease 가능한 queue로 분리해야 동일 구독의 동시 실행을 방지할 수 있습니다.

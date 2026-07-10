@@ -28,9 +28,11 @@ function atomLink(value: unknown): string | undefined {
 export class RssConnector implements Connector {
   private readonly parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "", trimValues: true });
 
+  constructor(private readonly fetchText: (url: string) => Promise<string> = safeFetchText) {}
+
   async collect(source: SourcePlan): Promise<CollectedItem[]> {
     if (source.provider !== "rss") return [];
-    const xml = await safeFetchText(source.url);
+    const xml = await this.fetchText(source.url);
     const parsed = this.parser.parse(xml) as FeedNode;
     const rssItems = asArray(((parsed.rss as FeedNode | undefined)?.channel as FeedNode | undefined)?.item) as FeedNode[];
     const atomEntries = asArray((parsed.feed as FeedNode | undefined)?.entry) as FeedNode[];

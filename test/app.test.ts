@@ -21,7 +21,7 @@ test("webhook events are authenticated, deduplicated, and available through curs
         db.markPushSent(events.map((event) => event.eventId), new Date().toISOString());
       },
     },
-  });
+  }, { logger: false });
 
   const created = await app.inject({
     method: "POST",
@@ -133,7 +133,7 @@ test("webhook item identities are isolated between subscriptions", async () => {
     planner: { async create() { return { plan, mode: "fallback" }; } },
     worker: { async tick() {} },
     push: { async send() {} },
-  });
+  }, { logger: false });
 
   const subscriptions = [];
   for (const userId of ["user-1", "user-2"]) {
@@ -170,6 +170,55 @@ test("webhook item identities are isolated between subscriptions", async () => {
     });
     assert.equal(response.json().events[0].item.title, `Subscription ${index + 1}`);
   }
+
+  await app.close();
+  db.close();
+});
+
+test("API rejects unauthenticated, invalid, and cross-user requests", async () => {
+  const db = new AppDatabase(":memory:");
+  const plan: SearchPlan = {
+    topic: "general",
+    normalizedKeywords: ["release"],
+    intervalSeconds: 60,
+    sources: [{ provider: "webhook", name: "default" }],
+  };
+  const app = buildApp({
+    db,
+    planner: { async create() { return { plan, mode: "fallback" }; } },
+    worker: { async tick() {} },
+    push: { async send() {} },
+  }, { logger: false });
+
+  assert.equal((await app.inject({
+    method: "POST",
+    url: "/v1/subscriptions",
+    payload: { keyword: "valid keyword" },
+  })).statusCode, 401);
+  assert.equal((await app.inject({
+    method: "POST",
+    url: "/v1/subscriptions",
+    headers: { "x-user-id": "user-1" },
+    payload: { keyword: "x" },
+  })).statusCode, 400);
+
+  const created = await app.inject({
+    method: "POST",
+    url: "/v1/subscriptions",
+    headers: { "x-user-id": "user-1" },
+    payload: { keyword: "valid keyword" },
+  });
+  const id = created.json().id as string;
+  assert.equal((await app.inject({
+    method: "GET",
+    url: `/v1/subscriptions/${id}`,
+    headers: { "x-user-id": "user-2" },
+  })).statusCode, 404);
+  assert.equal((await app.inject({
+    method: "GET",
+    url: `/v1/subscriptions/${id}/events?cursor=-1`,
+    headers: { "x-user-id": "user-1" },
+  })).statusCode, 400);
 
   await app.close();
   db.close();

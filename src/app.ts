@@ -48,8 +48,8 @@ export function buildApp(dependencies: {
   push: {
     send(userId: string, subscriptionId: string, events: Array<{ eventId: number; item: CollectedItem }>): Promise<void>;
   };
-}): FastifyInstance {
-  const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
+}, options: { logger?: boolean } = {}): FastifyInstance {
+  const app = Fastify({ logger: options.logger ?? true, bodyLimit: 1_000_000 });
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof z.ZodError) {

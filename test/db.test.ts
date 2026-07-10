@@ -58,3 +58,38 @@ test("push outbox completes only after every device delivery is terminal", () =>
   assert.equal(db.getPendingPushEvents(subscriptionId).length, 0);
   db.close();
 });
+
+test("event polling uses a stable cursor and excludes suppressed or other-user events", () => {
+  const db = new AppDatabase(":memory:");
+  const now = "2026-07-10T00:00:00.000Z";
+  const firstSubscription = randomUUID();
+  const secondSubscription = randomUUID();
+  db.createSubscription({ id: firstSubscription, userId: "user-1", keyword: "release", plan: webhookPlan, webhookSecret: "one", now });
+  db.createSubscription({ id: secondSubscription, userId: "user-2", keyword: "release", plan: webhookPlan, webhookSecret: "two", now });
+
+  const store = (subscriptionId: string, id: string, visible: boolean) => db.storeItemAndEvent({
+    subscriptionId,
+    item: {
+      provider: `webhook:${subscriptionId}`,
+      externalId: id,
+      url: `https://example.com/${id}`,
+      title: id,
+    },
+    canonicalUrl: `https://example.com/${id}`,
+    visible,
+    now,
+  });
+  store(firstSubscription, "visible-1", true);
+  store(firstSubscription, "suppressed", false);
+  store(firstSubscription, "visible-2", true);
+  store(secondSubscription, "other-user", true);
+
+  const firstPage = db.pollEventsForUser("user-1", 0, 1);
+  assert.equal(firstPage.events[0]?.item.externalId, "visible-1");
+  assert.equal(firstPage.hasMore, true);
+  const secondPage = db.pollEventsForUser("user-1", firstPage.nextCursor, 1);
+  assert.equal(secondPage.events[0]?.item.externalId, "visible-2");
+  assert.equal(secondPage.hasMore, false);
+  assert.ok(secondPage.nextCursor > firstPage.nextCursor);
+  db.close();
+});
