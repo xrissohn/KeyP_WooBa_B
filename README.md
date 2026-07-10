@@ -20,6 +20,7 @@
 - 구독별 및 사용자 통합 cursor polling
 - FCM 토큰별 전달 상태, 500개 단위 batch와 재시도 outbox
 - 구독 목록/일시정지/재개 및 디바이스 해제
+- Firebase Installation ID 기반 로그인 없는 설치 식별과 App Check 검증
 
 ## 실행
 
@@ -45,6 +46,7 @@ pnpm dev
 | `DEFAULT_RSS_FEEDS` | AI가 선택할 수 있는 RSS URL allowlist |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | FCM 서비스 계정 JSON 문자열 |
 | `FIREBASE_PROJECT_ID` | Application Default Credentials 사용 시 프로젝트 ID |
+| `FIREBASE_APP_CHECK_ENFORCED` | App Check token 필수 검증 여부, production 기본 `true` |
 | `WORKER_CONCURRENCY` | 동시에 실행할 구독 수, 기본 5 |
 | `*_MIN_INTERVAL_SECONDS` | 공급자별 동일 검색 계획의 최소 재호출 간격 |
 | `*_DAILY_BUDGET` | 공급자 전체 일일 안전 호출량, 0은 제한 없음 |
@@ -57,33 +59,44 @@ NAVER 검색의 API HUB 이전으로 endpoint가 변경되면 `NAVER_SEARCH_BASE
 
 전체 API 명세는 [docs/openapi.yaml](docs/openapi.yaml), 사람이 읽기 위한 요약은 [docs/API.md](docs/API.md)를 참고하십시오. OpenAPI 명세와 실제 Fastify route의 일치 여부는 CI에서 자동 검증합니다.
 
-이 예제의 `x-user-id`는 인증 게이트웨이가 검증 후 넣어주는 사용자 식별자를 가정합니다. 인터넷에 직접 노출할 때는 JWT/session 인증 미들웨어로 교체해야 합니다.
+로그인 없이 Firebase Installation ID(FID)를 설치 단위 사용자 키로 사용합니다. 앱 재설치나 데이터 삭제로 FID가 바뀌면 기존 구독을 복구할 수 없으며 새 사용자로 취급됩니다. 운영 환경에서는 모든 앱 API 요청에 `x-firebase-appcheck`도 함께 전달해야 합니다.
 
-### 1. 관심사 등록
+### 1. Firebase 설치 및 FCM 토큰 등록
+
+앱에서 Firebase Installations SDK로 FID를 조회한 후 최초 한 번 등록합니다. FCM token은 함께 등록하거나 이후 `/v1/devices`로 갱신할 수 있습니다.
+
+```bash
+curl -X PUT http://127.0.0.1:3000/v1/installations/current \
+  -H 'content-type: application/json' \
+  -H 'x-firebase-installation-id: cFirebaseInstallationId123' \
+  -d '{"platform":"android","fcmToken":"FCM_REGISTRATION_TOKEN_AT_LEAST_20_CHARS"}'
+```
+
+### 2. 관심사 등록
 
 ```bash
 curl -X POST http://127.0.0.1:3000/v1/subscriptions \
   -H 'content-type: application/json' \
-  -H 'x-user-id: user-1' \
+  -H 'x-firebase-installation-id: cFirebaseInstallationId123' \
   -d '{"keyword":"서울 Java Spring 백엔드 개발자 채용"}'
 ```
 
 응답에는 검증된 `plan`과 해당 구독 전용 webhook URL/secret이 포함됩니다. secret은 생성 응답에서만 클라이언트에 전달됩니다.
 
-### 2. 이벤트 polling
+### 3. 이벤트 polling
 
 사용자의 모든 구독을 한 cursor로 조회하는 API가 클라이언트의 기본 polling endpoint입니다.
 
 ```bash
 curl 'http://127.0.0.1:3000/v1/events?cursor=0&limit=50' \
-  -H 'x-user-id: user-1'
+  -H 'x-firebase-installation-id: cFirebaseInstallationId123'
 ```
 
 특정 구독만 조회할 수도 있습니다.
 
 ```bash
 curl 'http://127.0.0.1:3000/v1/subscriptions/SUBSCRIPTION_ID/events?cursor=0&limit=50' \
-  -H 'x-user-id: user-1'
+  -H 'x-firebase-installation-id: cFirebaseInstallationId123'
 ```
 
 응답의 `nextCursor`를 저장하고 다음 요청에 사용합니다. cursor는 검색 API의 offset이 아니라 내부의 단조 증가 이벤트 ID이므로 응답 순위 변화에 영향을 받지 않습니다.
@@ -93,22 +106,22 @@ curl 'http://127.0.0.1:3000/v1/subscriptions/SUBSCRIPTION_ID/events?cursor=0&lim
 ```bash
 curl -X PATCH http://127.0.0.1:3000/v1/subscriptions/SUBSCRIPTION_ID/status \
   -H 'content-type: application/json' \
-  -H 'x-user-id: user-1' \
+  -H 'x-firebase-installation-id: cFirebaseInstallationId123' \
   -d '{"active":false}'
 ```
 
-### 3. FCM 토큰 등록
+### 4. FCM 토큰 갱신
 
 ```bash
 curl -X POST http://127.0.0.1:3000/v1/devices \
   -H 'content-type: application/json' \
-  -H 'x-user-id: user-1' \
+  -H 'x-firebase-installation-id: cFirebaseInstallationId123' \
   -d '{"token":"FCM_REGISTRATION_TOKEN","platform":"android"}'
 ```
 
-로그아웃 시 같은 token을 `DELETE /v1/devices`의 JSON body로 보내 비활성화합니다.
+FCM token이 회전하면 같은 endpoint로 새 token을 등록합니다. 앱 설치 데이터 삭제 시 `/v1/installations/current`를 `DELETE`하면 해당 FID의 구독과 token이 모두 비활성화됩니다.
 
-### 4. Webhook 이벤트 입력
+### 5. Webhook 이벤트 입력
 
 ```bash
 curl -X POST http://127.0.0.1:3000/v1/webhooks/SUBSCRIPTION_ID/default \

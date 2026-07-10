@@ -5,6 +5,7 @@ import { SearchPlanner } from "./planner.js";
 import { PushService } from "./push.js";
 import { PollWorker } from "./worker.js";
 import { buildApp } from "./app.js";
+import { AppCheckService } from "./firebase.js";
 
 const db = new AppDatabase(config.databasePath);
 const connectors = new ConnectorRegistry();
@@ -14,6 +15,7 @@ if (Object.values(reconciliation).some((count) => count > 0)) {
 }
 const planner = new SearchPlanner();
 const push = new PushService(db);
+const appCheck = new AppCheckService();
 const worker = new PollWorker(db, connectors, push, config.workerTickSeconds, config.workerConcurrency);
 const workerEnabled = config.appRole !== "api";
 const apiEnabled = config.appRole !== "worker";
@@ -22,6 +24,7 @@ const app = apiEnabled
       db,
       planner,
       worker: workerEnabled ? worker : { async tick() {} },
+      appCheck,
       push,
     })
   : undefined;

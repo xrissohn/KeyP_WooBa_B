@@ -7,6 +7,11 @@ import type { CollectedItem } from "./types.js";
 import { canonicalizeUrl, stableId } from "./util.js";
 
 const subscriptionBody = z.object({ keyword: z.string().trim().min(2).max(500) });
+const fidSchema = z.string().trim().min(10).max(200).regex(/^[A-Za-z0-9_-]+$/);
+const installationBody = z.object({
+  platform: z.enum(["ios", "android", "web"]),
+  fcmToken: z.string().min(20).max(4096).optional(),
+});
 const deviceBody = z.object({
   token: z.string().min(20).max(4096),
   platform: z.enum(["ios", "android", "web"]),
@@ -26,12 +31,22 @@ const webhookItem = z.object({
 });
 const webhookBody = z.object({ items: z.array(webhookItem).min(1).max(100) });
 
-function userId(request: FastifyRequest): string {
-  const value = request.headers["x-user-id"];
-  if (typeof value !== "string" || value.length < 1 || value.length > 200) {
-    throw Object.assign(new Error("x-user-id header is required"), { statusCode: 401 });
+function installationId(request: FastifyRequest): string {
+  const value = request.headers["x-firebase-installation-id"];
+  const parsed = fidSchema.safeParse(value);
+  if (!parsed.success) {
+    throw Object.assign(new Error("x-firebase-installation-id header is required"), { statusCode: 401 });
   }
-  return value;
+  return parsed.data;
+}
+
+function registeredInstallationId(request: FastifyRequest, db: AppDatabase): string {
+  const fid = installationId(request);
+  const now = new Date().toISOString();
+  if (!db.touchInstallation(fid, now)) {
+    throw Object.assign(new Error("Firebase installation is not registered"), { statusCode: 401 });
+  }
+  return fid;
 }
 
 function safeEqual(actual: string | undefined, expected: string): boolean {
@@ -45,8 +60,9 @@ export function buildApp(dependencies: {
   db: AppDatabase;
   planner: { create(keyword: string): Promise<PlannerResult> };
   worker: { tick(): Promise<void> };
+  appCheck?: { verify(token: string | undefined): Promise<void> };
   push: {
-    send(userId: string, subscriptionId: string, events: Array<{ eventId: number; item: CollectedItem }>): Promise<void>;
+    send(installationId: string, subscriptionId: string, events: Array<{ eventId: number; item: CollectedItem }>): Promise<void>;
   };
 }, options: { logger?: boolean } = {}): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? true, bodyLimit: 1_000_000 });
@@ -66,10 +82,37 @@ export function buildApp(dependencies: {
     });
   });
 
+  app.addHook("onRequest", async (request) => {
+    const isAppApi = request.url.startsWith("/v1/") && !request.url.startsWith("/v1/webhooks/");
+    if (!isAppApi) return;
+    const token = request.headers["x-firebase-appcheck"];
+    await dependencies.appCheck?.verify(typeof token === "string" ? token : undefined);
+  });
+
   app.get("/health", async () => ({ ok: true, now: new Date().toISOString() }));
 
+  app.put("/v1/installations/current", async (request, reply) => {
+    const fid = installationId(request);
+    const body = installationBody.parse(request.body);
+    const now = new Date().toISOString();
+    const installation = dependencies.db.registerInstallation({ fid, platform: body.platform, now });
+    if (body.fcmToken) dependencies.db.registerDevice(fid, body.fcmToken, body.platform, now);
+    return reply.status(200).send(installation);
+  });
+
+  app.get("/v1/installations/current", async (request) => {
+    const fid = registeredInstallationId(request, dependencies.db);
+    return dependencies.db.getInstallation(fid);
+  });
+
+  app.delete("/v1/installations/current", async (request, reply) => {
+    const fid = registeredInstallationId(request, dependencies.db);
+    dependencies.db.deactivateInstallation(fid, new Date().toISOString());
+    return reply.status(204).send();
+  });
+
   app.post("/v1/subscriptions", async (request, reply) => {
-    const owner = userId(request);
+    const owner = registeredInstallationId(request, dependencies.db);
     const body = subscriptionBody.parse(request.body);
     const plannerResult = await dependencies.planner.create(body.keyword);
     const id = randomUUID();
@@ -77,7 +120,7 @@ export function buildApp(dependencies: {
     const now = new Date().toISOString();
     dependencies.db.createSubscription({
       id,
-      userId: owner,
+      installationId: owner,
       keyword: body.keyword,
       plan: plannerResult.plan,
       webhookSecret,
@@ -99,27 +142,27 @@ export function buildApp(dependencies: {
   });
 
   app.get("/v1/subscriptions", async (request) => {
-    const owner = userId(request);
+    const owner = registeredInstallationId(request, dependencies.db);
     return { subscriptions: dependencies.db.listSubscriptions(owner) };
   });
 
   app.get("/v1/subscriptions/:id", async (request, reply) => {
-    const owner = userId(request);
+    const owner = registeredInstallationId(request, dependencies.db);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const subscription = dependencies.db.getSubscription(id);
-    if (!subscription || subscription.userId !== owner) return reply.status(404).send({ error: "not_found" });
+    if (!subscription || subscription.installationId !== owner) return reply.status(404).send({ error: "not_found" });
     return subscription;
   });
 
   app.delete("/v1/subscriptions/:id", async (request, reply) => {
-    const owner = userId(request);
+    const owner = registeredInstallationId(request, dependencies.db);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     if (!dependencies.db.deactivateSubscription(id, owner)) return reply.status(404).send({ error: "not_found" });
     return reply.status(204).send();
   });
 
   app.patch("/v1/subscriptions/:id/status", async (request, reply) => {
-    const owner = userId(request);
+    const owner = registeredInstallationId(request, dependencies.db);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const { active } = subscriptionStatusBody.parse(request.body);
     if (!dependencies.db.setSubscriptionActive(id, owner, active, new Date().toISOString())) {
@@ -130,31 +173,31 @@ export function buildApp(dependencies: {
   });
 
   app.get("/v1/subscriptions/:id/events", async (request, reply) => {
-    const owner = userId(request);
+    const owner = registeredInstallationId(request, dependencies.db);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const query = eventQuery.parse(request.query);
     const subscription = dependencies.db.getSubscription(id);
-    if (!subscription || subscription.userId !== owner) return reply.status(404).send({ error: "not_found" });
+    if (!subscription || subscription.installationId !== owner) return reply.status(404).send({ error: "not_found" });
     return dependencies.db.pollEvents(id, query.cursor, query.limit);
   });
 
   app.get("/v1/events", async (request) => {
-    const owner = userId(request);
+    const owner = registeredInstallationId(request, dependencies.db);
     const query = eventQuery.parse(request.query);
-    return dependencies.db.pollEventsForUser(owner, query.cursor, query.limit);
+    return dependencies.db.pollEventsForInstallation(owner, query.cursor, query.limit);
   });
 
   app.post("/v1/devices", async (request, reply) => {
-    const owner = userId(request);
+    const owner = registeredInstallationId(request, dependencies.db);
     const body = deviceBody.parse(request.body);
     dependencies.db.registerDevice(owner, body.token, body.platform, new Date().toISOString());
     return reply.status(204).send();
   });
 
   app.delete("/v1/devices", async (request, reply) => {
-    const owner = userId(request);
+    const owner = registeredInstallationId(request, dependencies.db);
     const { token } = deviceBody.pick({ token: true }).parse(request.body);
-    if (!dependencies.db.deactivateDeviceForUser(token, owner)) {
+    if (!dependencies.db.deactivateDeviceForInstallation(token, owner)) {
       return reply.status(404).send({ error: "not_found" });
     }
     return reply.status(204).send();
@@ -191,7 +234,7 @@ export function buildApp(dependencies: {
       });
       if (stored.inserted && visible && stored.eventId) newEvents.push({ eventId: stored.eventId, item });
     }
-    await dependencies.push.send(subscription.userId, subscription.id, newEvents);
+    await dependencies.push.send(subscription.installationId, subscription.id, newEvents);
     return reply.status(202).send({ accepted: body.items.length, created: newEvents.length });
   });
 

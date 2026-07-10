@@ -54,7 +54,7 @@ export interface Connector {
 
 export interface StoredSubscription {
   id: string;
-  userId: string;
+  installationId: string;
   keyword: string;
   plan: SearchPlan;
   active: boolean;

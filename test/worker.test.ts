@@ -39,7 +39,7 @@ test("first poll establishes a baseline and later polls emit each item once", as
   const registry = new ConnectorRegistry({ naver: connector });
   const pushed: number[] = [];
   const push = {
-    async send(_userId: string, _subscriptionId: string, events: Array<{ eventId: number }>) {
+    async send(_installationId: string, _subscriptionId: string, events: Array<{ eventId: number }>) {
       pushed.push(...events.map((event) => event.eventId));
       db.markPushSent(events.map((event) => event.eventId), new Date().toISOString());
     },
@@ -53,7 +53,7 @@ test("first poll establishes a baseline and later polls emit each item once", as
     sources: [{ provider: "naver", vertical: "news", query: "test" }],
   };
   const id = randomUUID();
-  db.createSubscription({ id, userId: "user-1", keyword: "test", plan, webhookSecret: "secret", now: createdAt });
+  db.createSubscription({ id, installationId: "fid-1", keyword: "test", plan, webhookSecret: "secret", now: createdAt });
 
   await worker.run(db.getSubscription(id)!);
   assert.deepEqual(db.pollEvents(id, 0, 50).events, []);
@@ -85,10 +85,10 @@ test("identical source plans share one provider request per cache interval", asy
     intervalSeconds: 60,
     sources: [{ provider: "naver", vertical: "news", query: "shared query" }],
   };
-  for (const userId of ["user-1", "user-2"]) {
+  for (const installationId of ["fid-1", "fid-2"]) {
     db.createSubscription({
       id: randomUUID(),
-      userId,
+      installationId,
       keyword: "shared query",
       plan,
       webhookSecret: randomUUID(),
@@ -122,7 +122,7 @@ test("items published before registration are suppressed even when discovered la
   const id = randomUUID();
   db.createSubscription({
     id,
-    userId: "user-1",
+    installationId: "fid-1",
     keyword: "test",
     webhookSecret: "secret",
     now: "2026-07-10T00:00:00.000Z",

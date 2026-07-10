@@ -9,6 +9,12 @@ function nonNegativeInt(name: string, fallback: number): number {
   return Math.max(0, int(name, fallback));
 }
 
+function bool(name: string, fallback: boolean): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (!value) return fallback;
+  return value === "1" || value === "true" || value === "yes";
+}
+
 function appRole(): "all" | "api" | "worker" {
   const value = process.env.APP_ROLE ?? "all";
   return value === "api" || value === "worker" ? value : "all";
@@ -57,6 +63,7 @@ export const config = {
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID,
     serviceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
+    appCheckEnforced: bool("FIREBASE_APP_CHECK_ENFORCED", process.env.NODE_ENV === "production"),
   },
   defaultRssFeeds: (process.env.DEFAULT_RSS_FEEDS ?? "")
     .split(",")

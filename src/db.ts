@@ -32,6 +32,15 @@ export interface StoredSourceCache {
   consecutiveFailures: number;
 }
 
+export interface StoredInstallation {
+  fid: string;
+  platform?: "ios" | "android" | "web";
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+}
+
 export class AppDatabase {
   readonly sqlite: DatabaseSync;
 
@@ -47,6 +56,7 @@ export class AppDatabase {
       CREATE TABLE IF NOT EXISTS subscriptions (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
+        installation_id TEXT,
         keyword TEXT NOT NULL,
         plan_json TEXT NOT NULL,
         webhook_secret TEXT NOT NULL,
@@ -60,6 +70,15 @@ export class AppDatabase {
 
       CREATE INDEX IF NOT EXISTS subscriptions_due_idx
         ON subscriptions(active, next_run_at);
+
+      CREATE TABLE IF NOT EXISTS installations (
+        fid TEXT PRIMARY KEY,
+        platform TEXT CHECK(platform IN ('ios', 'android', 'web')),
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+      );
 
       CREATE TABLE IF NOT EXISTS source_states (
         subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
@@ -118,6 +137,7 @@ export class AppDatabase {
       CREATE TABLE IF NOT EXISTS devices (
         token TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
+        installation_id TEXT,
         platform TEXT NOT NULL,
         active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
@@ -140,9 +160,23 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS push_deliveries_due_idx
         ON push_deliveries(event_id, status, next_attempt_at);
     `);
+    this.ensureColumn("subscriptions", "installation_id", "TEXT");
+    this.ensureColumn("devices", "installation_id", "TEXT");
     this.ensureColumn("subscriptions", "lease_owner", "TEXT");
     this.ensureColumn("subscriptions", "lease_until", "TEXT");
     this.sqlite.exec(`
+      UPDATE subscriptions SET installation_id = user_id WHERE installation_id IS NULL;
+      UPDATE devices SET installation_id = user_id WHERE installation_id IS NULL;
+      INSERT OR IGNORE INTO installations(fid, platform, active, created_at, updated_at, last_seen_at)
+      SELECT installation_id, NULL, 1, MIN(created_at), MAX(created_at), MAX(created_at)
+      FROM subscriptions WHERE installation_id IS NOT NULL GROUP BY installation_id;
+      INSERT OR IGNORE INTO installations(fid, platform, active, created_at, updated_at, last_seen_at)
+      SELECT installation_id, MAX(platform), MAX(active), MIN(created_at), MAX(updated_at), MAX(updated_at)
+      FROM devices WHERE installation_id IS NOT NULL GROUP BY installation_id;
+      CREATE INDEX IF NOT EXISTS subscriptions_installation_idx
+        ON subscriptions(installation_id, active, created_at);
+      CREATE INDEX IF NOT EXISTS devices_installation_idx
+        ON devices(installation_id, active);
       CREATE INDEX IF NOT EXISTS subscriptions_lease_idx
         ON subscriptions(active, next_run_at, lease_until);
     `);
@@ -157,6 +191,81 @@ export class AppDatabase {
 
   close(): void {
     this.sqlite.close();
+  }
+
+  registerInstallation(input: {
+    fid: string;
+    platform?: "ios" | "android" | "web";
+    now: string;
+  }): StoredInstallation {
+    this.sqlite.prepare(`
+      INSERT INTO installations(fid, platform, active, created_at, updated_at, last_seen_at)
+      VALUES (?, ?, 1, ?, ?, ?)
+      ON CONFLICT(fid) DO UPDATE SET
+        platform = COALESCE(excluded.platform, installations.platform),
+        active = 1,
+        updated_at = excluded.updated_at,
+        last_seen_at = excluded.last_seen_at
+    `).run(input.fid, input.platform ?? null, input.now, input.now, input.now);
+    return this.getInstallation(input.fid) as StoredInstallation;
+  }
+
+  getInstallation(fid: string): StoredInstallation | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT fid, platform, active, created_at, updated_at, last_seen_at
+      FROM installations WHERE fid = ? AND active = 1
+    `).get(fid) as Record<string, SqliteValue> | undefined;
+    if (!row) return undefined;
+    return {
+      fid: String(row.fid),
+      platform: row.platform ? String(row.platform) as StoredInstallation["platform"] : undefined,
+      active: Number(row.active) === 1,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      lastSeenAt: String(row.last_seen_at),
+    };
+  }
+
+  touchInstallation(fid: string, now: string): boolean {
+    return this.sqlite.prepare(`
+      UPDATE installations SET last_seen_at = ?, updated_at = ? WHERE fid = ? AND active = 1
+    `).run(now, now, fid).changes === 1;
+  }
+
+  deactivateInstallation(fid: string, now: string): boolean {
+    this.sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.sqlite.prepare(`
+        UPDATE installations SET active = 0, updated_at = ?, last_seen_at = ?
+        WHERE fid = ? AND active = 1
+      `).run(now, now, fid);
+      if (result.changes === 0) {
+        this.sqlite.exec("ROLLBACK");
+        return false;
+      }
+      this.sqlite.prepare(`
+        UPDATE subscriptions
+        SET active = 0, lease_owner = NULL, lease_until = NULL
+        WHERE installation_id = ?
+      `).run(fid);
+      const tokens = this.sqlite.prepare(`
+        SELECT token FROM devices WHERE installation_id = ? AND active = 1
+      `).all(fid) as Array<{ token: string }>;
+      this.sqlite.prepare("UPDATE devices SET active = 0, updated_at = ? WHERE installation_id = ?")
+        .run(now, fid);
+      const invalidate = this.sqlite.prepare(`
+        UPDATE push_deliveries
+        SET status = 'invalid', last_error = 'installation deactivated', updated_at = ?
+        WHERE token = ? AND status = 'pending'
+      `);
+      for (const { token } of tokens) invalidate.run(now, token);
+      this.markCompletedPushEvents(now);
+      this.sqlite.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   reconcileProviders(supportedProviders: string[]): {
@@ -228,7 +337,7 @@ export class AppDatabase {
 
   createSubscription(input: {
     id: string;
-    userId: string;
+    installationId: string;
     keyword: string;
     plan: SearchPlan;
     webhookSecret: string;
@@ -236,48 +345,57 @@ export class AppDatabase {
   }): void {
     this.sqlite.prepare(`
       INSERT INTO subscriptions
-        (id, user_id, keyword, plan_json, webhook_secret, created_at, next_run_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(input.id, input.userId, input.keyword, JSON.stringify(input.plan), input.webhookSecret, input.now, input.now);
+        (id, user_id, installation_id, keyword, plan_json, webhook_secret, created_at, next_run_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.id,
+      input.installationId,
+      input.installationId,
+      input.keyword,
+      JSON.stringify(input.plan),
+      input.webhookSecret,
+      input.now,
+      input.now,
+    );
   }
 
   getSubscription(id: string): StoredSubscription | undefined {
     const row = this.sqlite.prepare(`
-      SELECT id, user_id, keyword, plan_json, active, created_at, next_run_at
+      SELECT id, installation_id, keyword, plan_json, active, created_at, next_run_at
       FROM subscriptions WHERE id = ? AND active = 1
     `).get(id) as Record<string, SqliteValue> | undefined;
 
     return row ? this.mapSubscription(row) : undefined;
   }
 
-  listSubscriptions(userId: string): StoredSubscription[] {
+  listSubscriptions(installationId: string): StoredSubscription[] {
     const rows = this.sqlite.prepare(`
-      SELECT id, user_id, keyword, plan_json, active, created_at, next_run_at
+      SELECT id, installation_id, keyword, plan_json, active, created_at, next_run_at
       FROM subscriptions
-      WHERE user_id = ?
+      WHERE installation_id = ?
       ORDER BY created_at DESC
-    `).all(userId) as Array<Record<string, SqliteValue>>;
+    `).all(installationId) as Array<Record<string, SqliteValue>>;
     return rows.map((row) => this.mapSubscription(row));
   }
 
-  deactivateSubscription(id: string, userId: string): boolean {
+  deactivateSubscription(id: string, installationId: string): boolean {
     const result = this.sqlite.prepare(`
       UPDATE subscriptions SET active = 0, lease_owner = NULL, lease_until = NULL
-      WHERE id = ? AND user_id = ?
+      WHERE id = ? AND installation_id = ?
     `)
-      .run(id, userId);
+      .run(id, installationId);
     return result.changes === 1;
   }
 
-  setSubscriptionActive(id: string, userId: string, active: boolean, now: string): boolean {
+  setSubscriptionActive(id: string, installationId: string, active: boolean, now: string): boolean {
     const result = this.sqlite.prepare(`
       UPDATE subscriptions
       SET active = ?,
           next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
           lease_owner = NULL,
           lease_until = NULL
-      WHERE id = ? AND user_id = ?
-    `).run(active ? 1 : 0, active ? 1 : 0, now, id, userId);
+      WHERE id = ? AND installation_id = ?
+    `).run(active ? 1 : 0, active ? 1 : 0, now, id, installationId);
     return result.changes === 1;
   }
 
@@ -289,7 +407,7 @@ export class AppDatabase {
 
   listDueSubscriptions(now: string, limit = 100): StoredSubscription[] {
     const rows = this.sqlite.prepare(`
-      SELECT id, user_id, keyword, plan_json, active, created_at, next_run_at
+      SELECT id, installation_id, keyword, plan_json, active, created_at, next_run_at
       FROM subscriptions
       WHERE active = 1 AND next_run_at <= ?
       ORDER BY next_run_at ASC LIMIT ?
@@ -306,7 +424,7 @@ export class AppDatabase {
     this.sqlite.exec("BEGIN IMMEDIATE");
     try {
       const rows = this.sqlite.prepare(`
-        SELECT id, user_id, keyword, plan_json, active, created_at, next_run_at
+        SELECT id, installation_id, keyword, plan_json, active, created_at, next_run_at
         FROM subscriptions
         WHERE active = 1
           AND next_run_at <= ?
@@ -522,7 +640,7 @@ export class AppDatabase {
     return this.mapEventPage(rows, cursor, limit);
   }
 
-  pollEventsForUser(userId: string, cursor: number, limit: number): EventPage {
+  pollEventsForInstallation(installationId: string, cursor: number, limit: number): EventPage {
     const rows = this.sqlite.prepare(`
       SELECT
         e.id, e.subscription_id, e.created_at,
@@ -531,9 +649,9 @@ export class AppDatabase {
       FROM subscription_events e
       JOIN subscriptions s ON s.id = e.subscription_id
       JOIN items i ON i.id = e.item_id
-      WHERE s.user_id = ? AND e.visibility = 'visible' AND e.id > ?
+      WHERE s.installation_id = ? AND e.visibility = 'visible' AND e.id > ?
       ORDER BY e.id ASC LIMIT ?
-    `).all(userId, cursor, limit + 1) as Array<Record<string, SqliteValue>>;
+    `).all(installationId, cursor, limit + 1) as Array<Record<string, SqliteValue>>;
     return this.mapEventPage(rows, cursor, limit);
   }
 
@@ -561,21 +679,22 @@ export class AppDatabase {
     };
   }
 
-  registerDevice(userId: string, token: string, platform: string, now: string): void {
+  registerDevice(installationId: string, token: string, platform: string, now: string): void {
     this.sqlite.prepare(`
-      INSERT INTO devices(token, user_id, platform, active, created_at, updated_at)
-      VALUES (?, ?, ?, 1, ?, ?)
+      INSERT INTO devices(token, user_id, installation_id, platform, active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(token) DO UPDATE SET
         user_id = excluded.user_id,
+        installation_id = excluded.installation_id,
         platform = excluded.platform,
         active = 1,
         updated_at = excluded.updated_at
-    `).run(token, userId, platform, now, now);
+    `).run(token, installationId, installationId, platform, now, now);
   }
 
-  getDeviceTokens(userId: string): string[] {
-    const rows = this.sqlite.prepare("SELECT token FROM devices WHERE user_id = ? AND active = 1")
-      .all(userId) as Array<{ token: string }>;
+  getDeviceTokens(installationId: string): string[] {
+    const rows = this.sqlite.prepare("SELECT token FROM devices WHERE installation_id = ? AND active = 1")
+      .all(installationId) as Array<{ token: string }>;
     return rows.map((row) => row.token);
   }
 
@@ -596,10 +715,10 @@ export class AppDatabase {
     }
   }
 
-  deactivateDeviceForUser(token: string, userId: string): boolean {
-    const row = this.sqlite.prepare("SELECT user_id FROM devices WHERE token = ? AND active = 1")
-      .get(token) as { user_id: string } | undefined;
-    if (!row || row.user_id !== userId) return false;
+  deactivateDeviceForInstallation(token: string, installationId: string): boolean {
+    const row = this.sqlite.prepare("SELECT installation_id FROM devices WHERE token = ? AND active = 1")
+      .get(token) as { installation_id: string } | undefined;
+    if (!row || row.installation_id !== installationId) return false;
     this.deactivateDevice(token);
     return true;
   }
@@ -665,7 +784,7 @@ export class AppDatabase {
     return result.changes === 1;
   }
 
-  private markCompletedPushEvents(): void {
+  private markCompletedPushEvents(now = new Date().toISOString()): void {
     this.sqlite.prepare(`
       UPDATE subscription_events SET push_sent_at = COALESCE(push_sent_at, ?)
       WHERE push_sent_at IS NULL
@@ -674,7 +793,7 @@ export class AppDatabase {
           SELECT 1 FROM push_deliveries
           WHERE event_id = subscription_events.id AND status = 'pending'
         )
-    `).run(new Date().toISOString());
+    `).run(now);
   }
 
   getPendingPushEvents(subscriptionId: string, limit = 100): Array<{ eventId: number; item: CollectedItem }> {
@@ -706,7 +825,7 @@ export class AppDatabase {
   private mapSubscription(row: Record<string, SqliteValue>): StoredSubscription {
     return {
       id: String(row.id),
-      userId: String(row.user_id),
+      installationId: String(row.installation_id),
       keyword: String(row.keyword),
       plan: JSON.parse(String(row.plan_json)) as SearchPlan,
       active: Number(row.active) === 1,

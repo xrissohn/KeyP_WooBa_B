@@ -16,7 +16,7 @@ export class PollWorker {
     private readonly db: AppDatabase,
     private readonly connectors: ConnectorRegistry,
     private readonly push: {
-      send(userId: string, subscriptionId: string, events: Array<{ eventId: number; item: CollectedItem }>): Promise<void>;
+      send(installationId: string, subscriptionId: string, events: Array<{ eventId: number; item: CollectedItem }>): Promise<void>;
     },
     private readonly tickSeconds: number,
     private readonly concurrency = 5,
@@ -95,7 +95,7 @@ export class PollWorker {
         }
       }
       const pendingPush = this.db.getPendingPushEvents(subscription.id);
-      await this.push.send(subscription.userId, subscription.id, pendingPush);
+      await this.push.send(subscription.installationId, subscription.id, pendingPush);
     } finally {
       const scheduled = startedAt.getTime() + subscription.plan.intervalSeconds * 1000;
       const next = new Date(Math.max(this.clock().getTime(), scheduled)).toISOString();
