@@ -47,9 +47,9 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val token = tokenProvider.currentToken()
             Log.d(TAG, "fetched FCM token: ${token?.take(16)}...")
-            runCatching { devices.setEnabled(true, token, tokenProvider.platform) }
-                .onSuccess { Log.d(TAG, "registered device with backend") }
-                .onFailure { Log.e(TAG, "failed to register device", it) }
+            runCatching { devices.registerInstallation(token, tokenProvider.platform) }
+                .onSuccess { Log.d(TAG, "registered Firebase installation with backend") }
+                .onFailure { Log.e(TAG, "failed to register Firebase installation", it) }
         }
     }
 }

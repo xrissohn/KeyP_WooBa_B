@@ -2,8 +2,6 @@ package com.jetbrains.kmpapp.data
 
 /** Backend connection settings shared by all platforms. See docs/API.md. */
 object ApiConfig {
-    /** Dev-only auth header; production will swap this for a real auth gateway. */
-    const val DEV_USER_ID = "keyp-mobile-dev"
     const val PORT = 3000
 }
 

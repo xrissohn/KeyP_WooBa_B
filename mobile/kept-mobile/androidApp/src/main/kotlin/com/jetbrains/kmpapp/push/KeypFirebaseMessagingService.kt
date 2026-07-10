@@ -43,8 +43,8 @@ class KeypFirebaseMessagingService : FirebaseMessagingService() {
         val devices = koin.get<DeviceRepository>()
         val tokenProvider = koin.get<PushTokenProvider>()
         scope.launch {
-            runCatching { devices.setEnabled(true, token, tokenProvider.platform) }
-                .onFailure { Log.e(TAG, "failed to register refreshed token", it) }
+            runCatching { devices.registerInstallation(token, tokenProvider.platform) }
+                .onFailure { Log.e(TAG, "failed to register refreshed Firebase token", it) }
         }
     }
 

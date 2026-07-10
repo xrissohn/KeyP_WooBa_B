@@ -36,7 +36,6 @@ val dataModule = module {
             expectSuccess = true
             defaultRequest {
                 url(GENERATED_BASE_URL)
-                headers.append("x-user-id", ApiConfig.DEV_USER_ID)
             }
             install(ContentNegotiation) {
                 json(json)
@@ -56,8 +55,8 @@ val dataModule = module {
         }
     }
 
-    single<KeypApi> { KtorKeypApi(get()) }
     single<PushTokenProvider> { createPushTokenProvider() }
+    single<KeypApi> { KtorKeypApi(get(), get()) }
     single { SubscriptionRepository(get(), get()) }
     single { FeedRepository(get()) }
     single { DeviceRepository(get()) }

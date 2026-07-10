@@ -86,6 +86,7 @@ kotlin {
             implementation(libs.ktor.client.okhttp)
             implementation(project.dependencies.platform("com.google.firebase:firebase-bom:34.15.0"))
             implementation(libs.firebase.messaging)
+            implementation(libs.firebase.installations)
         }
         iosMain.dependencies {
             implementation(libs.ktor.client.darwin)

@@ -70,6 +70,10 @@ class FeedRepository(private val api: KeypApi) {
 }
 
 class DeviceRepository(private val api: KeypApi) {
+    suspend fun registerInstallation(token: String?, platform: String) {
+        api.registerInstallation(token, platform)
+    }
+
     suspend fun setEnabled(enabled: Boolean, token: String?, platform: String) {
         if (token == null) return
         if (enabled) api.registerDevice(token, platform) else api.deleteDevice(token)
