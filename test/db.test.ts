@@ -45,6 +45,45 @@ test("scheduler leases prevent duplicate claims and expire after timeout", () =>
   db.close();
 });
 
+test("provider reconciliation removes legacy sources and disables empty plans", () => {
+  const db = new AppDatabase(":memory:");
+  const now = "2026-07-10T00:00:00.000Z";
+  const mixedId = randomUUID();
+  const legacyOnlyId = randomUUID();
+  db.createSubscription({ id: mixedId, userId: "user-1", keyword: "mixed", plan: webhookPlan, webhookSecret: "one", now });
+  db.createSubscription({ id: legacyOnlyId, userId: "user-1", keyword: "legacy", plan: webhookPlan, webhookSecret: "two", now });
+  db.sqlite.prepare("UPDATE subscriptions SET plan_json = ? WHERE id = ?").run(JSON.stringify({
+    ...webhookPlan,
+    sources: [{ provider: "naver", vertical: "news", query: "release" }, { provider: "google", query: "release" }],
+  }), mixedId);
+  db.sqlite.prepare("UPDATE subscriptions SET plan_json = ? WHERE id = ?").run(JSON.stringify({
+    ...webhookPlan,
+    sources: [{ provider: "saramin", query: "backend" }],
+  }), legacyOnlyId);
+  db.recordSourceCacheFailure({
+    sourceKey: "legacy-cache",
+    source: { provider: "google", query: "release" },
+    error: "removed provider",
+    nextFetchAt: now,
+  });
+  db.markSourceError(mixedId, "legacy-orphan", "removed provider");
+  db.tryConsumeProviderBudget("google", "2026-07-10", 1, 10);
+
+  assert.deepEqual(db.reconcileProviders(["naver", "x", "rss", "webhook"]), {
+    updatedSubscriptions: 1,
+    deactivatedSubscriptions: 1,
+    removedSourceCaches: 1,
+    removedOrphanStates: 1,
+  });
+  assert.deepEqual(db.getSubscription(mixedId)?.plan.sources, [
+    { provider: "naver", vertical: "news", query: "release" },
+  ]);
+  assert.equal(db.getSubscription(legacyOnlyId), undefined);
+  assert.equal(db.getSourceCache("legacy-cache"), undefined);
+  assert.equal(db.getProviderUsage("google", "2026-07-10"), 0);
+  db.close();
+});
+
 test("push outbox completes only after every device delivery is terminal", () => {
   const db = new AppDatabase(":memory:");
   const now = "2026-07-10T00:00:00.000Z";

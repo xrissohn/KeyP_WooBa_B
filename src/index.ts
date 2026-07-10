@@ -8,6 +8,10 @@ import { buildApp } from "./app.js";
 
 const db = new AppDatabase(config.databasePath);
 const connectors = new ConnectorRegistry();
+const reconciliation = db.reconcileProviders(connectors.supportedProviders());
+if (Object.values(reconciliation).some((count) => count > 0)) {
+  console.info("Provider reconciliation completed", reconciliation);
+}
 const planner = new SearchPlanner();
 const push = new PushService(db);
 const worker = new PollWorker(db, connectors, push, config.workerTickSeconds, config.workerConcurrency);

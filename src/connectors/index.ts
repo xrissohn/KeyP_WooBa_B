@@ -19,4 +19,8 @@ export class ConnectorRegistry {
   get(provider: SourcePlan["provider"]): Connector | undefined {
     return this.connectors[provider];
   }
+
+  supportedProviders(): SourcePlan["provider"][] {
+    return [...Object.keys(this.connectors), "webhook"] as SourcePlan["provider"][];
+  }
 }
