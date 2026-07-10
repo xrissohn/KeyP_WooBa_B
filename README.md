@@ -68,6 +68,8 @@ NAVER 검색의 API HUB 이전으로 endpoint가 변경되면 `NAVER_SEARCH_BASE
 
 자격 증명이 없는 공급자는 AI 검색 계획과 fallback 계획에서 자동 제외됩니다. AI 검색 엔진은 `AI_SEARCH_ENGINES` 순서대로 시도하고 첫 성공 결과만 사용해 중복 호출을 줄입니다. Google AI Studio/Gemini 키와 YouTube Data API 키는 서로 다른 API 제한을 적용한 별도 키 사용을 권장합니다.
 
+EC2 배포에서는 SQLite 파일이 배포 디렉토리 초기화에 같이 삭제되지 않도록 `DATABASE_PATH`를 release 경로 밖의 영속 디렉토리로 지정하십시오. 예: `DATABASE_PATH=/var/lib/keyp/radar.sqlite`. 로컬 기본값인 `./data/radar.sqlite`와 SQLite sidecar 파일(`*.sqlite-wal`, `*.sqlite-shm`)은 git에서 무시됩니다.
+
 ## API 흐름
 
 전체 API 명세는 [docs/openapi.yaml](docs/openapi.yaml), 사람이 읽기 위한 요약은 [docs/API.md](docs/API.md)를 참고하십시오. OpenAPI 명세와 실제 Fastify route의 일치 여부는 CI에서 자동 검증합니다.
