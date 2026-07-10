@@ -61,6 +61,7 @@ export interface StoredSubscription {
   userId: string;
   keyword: string;
   plan: SearchPlan;
+  active: boolean;
   createdAt: string;
   baselineCompletedAt?: string;
   nextRunAt: string;

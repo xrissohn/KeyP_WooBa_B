@@ -28,26 +28,70 @@ export class PushService {
     if (tokens.length === 0) return;
 
     for (const event of events) {
-      const response = await getMessaging().sendEachForMulticast({
-        tokens,
-        notification: {
-          title: event.item.title.slice(0, 120),
-          body: (event.item.summary || "새로운 관심 정보가 등록되었습니다.").slice(0, 240),
-        },
-        data: {
-          subscriptionId,
-          eventCursor: String(event.eventId),
-          provider: event.item.provider,
-          url: event.item.url,
-        },
-      });
-      response.responses.forEach((result, index) => {
-        if (!result.success && result.error && INVALID_TOKEN_CODES.has(result.error.code)) {
-          const token = tokens[index];
-          if (token) this.db.deactivateDevice(token);
+      const initializedAt = new Date().toISOString();
+      this.db.ensurePushDeliveries(event.eventId, tokens, initializedAt);
+      while (true) {
+        const attemptAt = new Date().toISOString();
+        const dueTokens = this.db.getDuePushTokens(event.eventId, attemptAt, 500);
+        if (dueTokens.length === 0) break;
+        try {
+          const response = await getMessaging().sendEachForMulticast({
+            tokens: dueTokens,
+            notification: {
+              title: event.item.title.slice(0, 120),
+              body: (event.item.summary || "새로운 관심 정보가 등록되었습니다.").slice(0, 240),
+            },
+            data: {
+              subscriptionId,
+              eventCursor: String(event.eventId),
+              provider: event.item.provider,
+              url: event.item.url,
+            },
+          });
+          response.responses.forEach((result, index) => {
+            const token = dueTokens[index];
+            if (!token) return;
+            if (result.success) {
+              this.db.markPushDelivery({ eventId: event.eventId, token, status: "sent", now: attemptAt });
+              return;
+            }
+            const code = result.error?.code;
+            if (code && INVALID_TOKEN_CODES.has(code)) {
+              this.db.markPushDelivery({
+                eventId: event.eventId,
+                token,
+                status: "invalid",
+                now: attemptAt,
+                error: code,
+              });
+              this.db.deactivateDevice(token);
+              return;
+            }
+            this.db.markPushDelivery({
+              eventId: event.eventId,
+              token,
+              status: "pending",
+              now: attemptAt,
+              nextAttemptAt: new Date(Date.parse(attemptAt) + 60_000).toISOString(),
+              error: code ?? result.error?.message ?? "FCM delivery failed",
+            });
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const nextAttemptAt = new Date(Date.parse(attemptAt) + 60_000).toISOString();
+          for (const token of dueTokens) {
+            this.db.markPushDelivery({
+              eventId: event.eventId,
+              token,
+              status: "pending",
+              now: attemptAt,
+              nextAttemptAt,
+              error: message,
+            });
+          }
         }
-      });
-      if (response.successCount > 0) this.db.markPushSent([event.eventId], new Date().toISOString());
+      }
+      this.db.completePushEventIfDelivered(event.eventId, new Date().toISOString());
     }
   }
 }

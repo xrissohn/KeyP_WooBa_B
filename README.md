@@ -1,6 +1,6 @@
 # Interest Radar API
 
-사용자가 등록한 관심사를 AI가 검색 계획으로 변환하고, 외부 검색 API와 RSS를 1분 간격으로 확인해 새 항목을 polling API와 FCM으로 전달하는 TypeScript 백엔드입니다.
+사용자가 등록한 관심사를 AI가 검색 계획으로 변환하고, 외부 검색 API와 RSS에서 새 항목을 수집해 polling API와 FCM으로 전달하는 TypeScript 백엔드입니다. 구독은 1분 단위로 확인하되 실제 외부 호출은 공급자별 최소 주기와 일일 예산을 따릅니다.
 
 ## 제공 기능
 
@@ -13,8 +13,10 @@
 - secret 인증을 사용하는 외부 webhook 수신
 - 소스별 최초 baseline 억제 및 게시일 기반 등록 이전 결과 억제
 - 공급자 ID/URL 기반 중복 제거와 DB unique constraint
-- cursor 기반 클라이언트 polling
-- FCM push와 미발송 이벤트 재시도 outbox
+- 동일 검색 계획의 공유 캐시와 공급자별 일일 호출 예산
+- 구독별 및 사용자 통합 cursor polling
+- FCM 토큰별 전달 상태, 500개 단위 batch와 재시도 outbox
+- 구독 목록/일시정지/재개 및 디바이스 해제
 
 ## 실행
 
@@ -42,8 +44,12 @@ pnpm dev
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | FCM 서비스 계정 JSON 문자열 |
 | `FIREBASE_PROJECT_ID` | Application Default Credentials 사용 시 프로젝트 ID |
 | `WORKER_CONCURRENCY` | 동시에 실행할 구독 수, 기본 5 |
+| `*_MIN_INTERVAL_SECONDS` | 공급자별 동일 검색 계획의 최소 재호출 간격 |
+| `*_DAILY_BUDGET` | 공급자 전체 일일 안전 호출량, 0은 제한 없음 |
 
 NAVER 검색의 API HUB 이전으로 endpoint가 변경되면 `NAVER_SEARCH_BASE_URL`을 새 endpoint로 설정할 수 있습니다.
+
+Google Custom Search JSON API는 신규 고객이 사용할 수 없고 기존 고객도 2027년 1월 1일까지 이전해야 하므로, 기존 자격 증명이 있는 환경에서만 활성화하십시오. 자격 증명이 없는 공급자는 AI 검색 계획과 fallback 계획에서 자동 제외됩니다.
 
 ## API 흐름
 
@@ -62,12 +68,30 @@ curl -X POST http://127.0.0.1:3000/v1/subscriptions \
 
 ### 2. 이벤트 polling
 
+사용자의 모든 구독을 한 cursor로 조회하는 API가 클라이언트의 기본 polling endpoint입니다.
+
+```bash
+curl 'http://127.0.0.1:3000/v1/events?cursor=0&limit=50' \
+  -H 'x-user-id: user-1'
+```
+
+특정 구독만 조회할 수도 있습니다.
+
 ```bash
 curl 'http://127.0.0.1:3000/v1/subscriptions/SUBSCRIPTION_ID/events?cursor=0&limit=50' \
   -H 'x-user-id: user-1'
 ```
 
 응답의 `nextCursor`를 저장하고 다음 요청에 사용합니다. cursor는 검색 API의 offset이 아니라 내부의 단조 증가 이벤트 ID이므로 응답 순위 변화에 영향을 받지 않습니다.
+
+구독 목록은 `GET /v1/subscriptions`, 일시정지/재개는 다음 API를 사용합니다.
+
+```bash
+curl -X PATCH http://127.0.0.1:3000/v1/subscriptions/SUBSCRIPTION_ID/status \
+  -H 'content-type: application/json' \
+  -H 'x-user-id: user-1' \
+  -d '{"active":false}'
+```
 
 ### 3. FCM 토큰 등록
 
@@ -77,6 +101,8 @@ curl -X POST http://127.0.0.1:3000/v1/devices \
   -H 'x-user-id: user-1' \
   -d '{"token":"FCM_REGISTRATION_TOKEN","platform":"android"}'
 ```
+
+로그아웃 시 같은 token을 `DELETE /v1/devices`의 JSON body로 보내 비활성화합니다.
 
 ### 4. Webhook 이벤트 입력
 
@@ -96,9 +122,12 @@ provider + external_id             전역 항목 중복 방지
 subscription_id + item_id          구독별 이벤트 중복 방지
 subscription_events.id             클라이언트 polling cursor
 subscription_events.push_sent_at   FCM outbox 상태
+push_deliveries(event_id, token)    디바이스별 FCM 전달 상태
+source_cache.source_key             동일 검색 계획의 공유 수집 결과
+provider_usage(provider, day)       공급자 전체 일일 호출량
 ```
 
-사람인은 `published_min/max`에 10분 overlap을 적용합니다. NAVER와 Google은 진짜 변경 cursor가 없으므로 최신 결과를 반복 수집하고 내부 unique constraint로 중복 제거합니다. 따라서 두 범용 검색 API만으로 원본 정보의 완전한 수집을 보장할 수는 없습니다.
+일반 감시는 공급자별 최신 첫 페이지만 수집합니다. 사람인은 `published_min/max`에 10분 overlap을 적용합니다. NAVER와 Google은 진짜 변경 cursor가 없으므로 최신 결과를 반복 수집하고 내부 unique constraint로 중복 제거합니다. 따라서 범용 검색 API만으로 원본 정보의 완전한 수집을 보장할 수는 없습니다.
 
 ## 검증
 

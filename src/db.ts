@@ -24,6 +24,14 @@ export interface EventPage {
   hasMore: boolean;
 }
 
+export interface StoredSourceCache {
+  items?: CollectedItem[];
+  fetchedAt?: string;
+  nextFetchAt: string;
+  lastError?: string;
+  consecutiveFailures: number;
+}
+
 export class AppDatabase {
   readonly sqlite: DatabaseSync;
 
@@ -58,6 +66,25 @@ export class AppDatabase {
         last_successful_at TEXT,
         last_error TEXT,
         PRIMARY KEY(subscription_id, source_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS source_cache (
+        source_key TEXT PRIMARY KEY,
+        source_json TEXT NOT NULL,
+        items_json TEXT,
+        fetched_at TEXT,
+        next_fetch_at TEXT NOT NULL,
+        last_error TEXT,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS source_cache_due_idx ON source_cache(next_fetch_at);
+
+      CREATE TABLE IF NOT EXISTS provider_usage (
+        provider TEXT NOT NULL,
+        usage_day TEXT NOT NULL,
+        units INTEGER NOT NULL,
+        PRIMARY KEY(provider, usage_day)
       );
 
       CREATE TABLE IF NOT EXISTS items (
@@ -96,6 +123,20 @@ export class AppDatabase {
       );
 
       CREATE INDEX IF NOT EXISTS devices_user_idx ON devices(user_id, active);
+
+      CREATE TABLE IF NOT EXISTS push_deliveries (
+        event_id INTEGER NOT NULL REFERENCES subscription_events(id) ON DELETE CASCADE,
+        token TEXT NOT NULL REFERENCES devices(token) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'sent', 'invalid')) DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        last_error TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(event_id, token)
+      );
+
+      CREATE INDEX IF NOT EXISTS push_deliveries_due_idx
+        ON push_deliveries(event_id, status, next_attempt_at);
     `);
   }
 
@@ -120,16 +161,35 @@ export class AppDatabase {
 
   getSubscription(id: string): StoredSubscription | undefined {
     const row = this.sqlite.prepare(`
-      SELECT id, user_id, keyword, plan_json, created_at, next_run_at
+      SELECT id, user_id, keyword, plan_json, active, created_at, next_run_at
       FROM subscriptions WHERE id = ? AND active = 1
     `).get(id) as Record<string, SqliteValue> | undefined;
 
     return row ? this.mapSubscription(row) : undefined;
   }
 
+  listSubscriptions(userId: string): StoredSubscription[] {
+    const rows = this.sqlite.prepare(`
+      SELECT id, user_id, keyword, plan_json, active, created_at, next_run_at
+      FROM subscriptions
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+    `).all(userId) as Array<Record<string, SqliteValue>>;
+    return rows.map((row) => this.mapSubscription(row));
+  }
+
   deactivateSubscription(id: string, userId: string): boolean {
     const result = this.sqlite.prepare("UPDATE subscriptions SET active = 0 WHERE id = ? AND user_id = ?")
       .run(id, userId);
+    return result.changes === 1;
+  }
+
+  setSubscriptionActive(id: string, userId: string, active: boolean, now: string): boolean {
+    const result = this.sqlite.prepare(`
+      UPDATE subscriptions
+      SET active = ?, next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END
+      WHERE id = ? AND user_id = ?
+    `).run(active ? 1 : 0, active ? 1 : 0, now, id, userId);
     return result.changes === 1;
   }
 
@@ -141,7 +201,7 @@ export class AppDatabase {
 
   listDueSubscriptions(now: string, limit = 100): StoredSubscription[] {
     const rows = this.sqlite.prepare(`
-      SELECT id, user_id, keyword, plan_json, created_at, next_run_at
+      SELECT id, user_id, keyword, plan_json, active, created_at, next_run_at
       FROM subscriptions
       WHERE active = 1 AND next_run_at <= ?
       ORDER BY next_run_at ASC LIMIT ?
@@ -190,6 +250,96 @@ export class AppDatabase {
       VALUES (?, ?, ?)
       ON CONFLICT(subscription_id, source_key) DO UPDATE SET last_error = excluded.last_error
     `).run(subscriptionId, sourceKey, error.slice(0, 1000));
+  }
+
+  getSourceCache(sourceKey: string): StoredSourceCache | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT items_json, fetched_at, next_fetch_at, last_error, consecutive_failures
+      FROM source_cache WHERE source_key = ?
+    `).get(sourceKey) as Record<string, SqliteValue> | undefined;
+    if (!row) return undefined;
+    return {
+      items: row.items_json ? JSON.parse(String(row.items_json)) as CollectedItem[] : undefined,
+      fetchedAt: row.fetched_at ? String(row.fetched_at) : undefined,
+      nextFetchAt: String(row.next_fetch_at),
+      lastError: row.last_error ? String(row.last_error) : undefined,
+      consecutiveFailures: Number(row.consecutive_failures),
+    };
+  }
+
+  recordSourceCacheSuccess(input: {
+    sourceKey: string;
+    source: object;
+    items: CollectedItem[];
+    fetchedAt: string;
+    nextFetchAt: string;
+  }): void {
+    this.sqlite.prepare(`
+      INSERT INTO source_cache
+        (source_key, source_json, items_json, fetched_at, next_fetch_at, last_error, consecutive_failures)
+      VALUES (?, ?, ?, ?, ?, NULL, 0)
+      ON CONFLICT(source_key) DO UPDATE SET
+        source_json = excluded.source_json,
+        items_json = excluded.items_json,
+        fetched_at = excluded.fetched_at,
+        next_fetch_at = excluded.next_fetch_at,
+        last_error = NULL,
+        consecutive_failures = 0
+    `).run(
+      input.sourceKey,
+      JSON.stringify(input.source),
+      JSON.stringify(input.items),
+      input.fetchedAt,
+      input.nextFetchAt,
+    );
+  }
+
+  recordSourceCacheFailure(input: {
+    sourceKey: string;
+    source: object;
+    error: string;
+    nextFetchAt: string;
+  }): void {
+    this.sqlite.prepare(`
+      INSERT INTO source_cache
+        (source_key, source_json, next_fetch_at, last_error, consecutive_failures)
+      VALUES (?, ?, ?, ?, 1)
+      ON CONFLICT(source_key) DO UPDATE SET
+        source_json = excluded.source_json,
+        next_fetch_at = excluded.next_fetch_at,
+        last_error = excluded.last_error,
+        consecutive_failures = source_cache.consecutive_failures + 1
+    `).run(input.sourceKey, JSON.stringify(input.source), input.nextFetchAt, input.error.slice(0, 1000));
+  }
+
+  tryConsumeProviderBudget(provider: string, usageDay: string, units: number, dailyLimit: number): boolean {
+    if (dailyLimit === 0) return true;
+    this.sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.sqlite.prepare(`
+        SELECT units FROM provider_usage WHERE provider = ? AND usage_day = ?
+      `).get(provider, usageDay) as { units: number } | undefined;
+      if ((row?.units ?? 0) + units > dailyLimit) {
+        this.sqlite.exec("ROLLBACK");
+        return false;
+      }
+      this.sqlite.prepare(`
+        INSERT INTO provider_usage(provider, usage_day, units) VALUES (?, ?, ?)
+        ON CONFLICT(provider, usage_day) DO UPDATE SET units = provider_usage.units + excluded.units
+      `).run(provider, usageDay, units);
+      this.sqlite.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  getProviderUsage(provider: string, usageDay: string): number {
+    const row = this.sqlite.prepare(`
+      SELECT units FROM provider_usage WHERE provider = ? AND usage_day = ?
+    `).get(provider, usageDay) as { units: number } | undefined;
+    return row?.units ?? 0;
   }
 
   storeItemAndEvent(input: {
@@ -250,6 +400,25 @@ export class AppDatabase {
       ORDER BY e.id ASC LIMIT ?
     `).all(subscriptionId, cursor, limit + 1) as Array<Record<string, SqliteValue>>;
 
+    return this.mapEventPage(rows, cursor, limit);
+  }
+
+  pollEventsForUser(userId: string, cursor: number, limit: number): EventPage {
+    const rows = this.sqlite.prepare(`
+      SELECT
+        e.id, e.subscription_id, e.created_at,
+        i.provider, i.external_id, i.canonical_url, i.title, i.summary,
+        i.published_at, i.first_seen_at
+      FROM subscription_events e
+      JOIN subscriptions s ON s.id = e.subscription_id
+      JOIN items i ON i.id = e.item_id
+      WHERE s.user_id = ? AND e.visibility = 'visible' AND e.id > ?
+      ORDER BY e.id ASC LIMIT ?
+    `).all(userId, cursor, limit + 1) as Array<Record<string, SqliteValue>>;
+    return this.mapEventPage(rows, cursor, limit);
+  }
+
+  private mapEventPage(rows: Array<Record<string, SqliteValue>>, cursor: number, limit: number): EventPage {
     const hasMore = rows.length > limit;
     const pageRows = rows.slice(0, limit);
     const events = pageRows.map((row) => ({
@@ -292,12 +461,101 @@ export class AppDatabase {
   }
 
   deactivateDevice(token: string): void {
-    this.sqlite.prepare("UPDATE devices SET active = 0 WHERE token = ?").run(token);
+    this.sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      this.sqlite.prepare("UPDATE devices SET active = 0 WHERE token = ?").run(token);
+      this.sqlite.prepare(`
+        UPDATE push_deliveries
+        SET status = 'invalid', last_error = 'device token deactivated', updated_at = ?
+        WHERE token = ? AND status = 'pending'
+      `).run(new Date().toISOString(), token);
+      this.markCompletedPushEvents();
+      this.sqlite.exec("COMMIT");
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  deactivateDeviceForUser(token: string, userId: string): boolean {
+    const row = this.sqlite.prepare("SELECT user_id FROM devices WHERE token = ? AND active = 1")
+      .get(token) as { user_id: string } | undefined;
+    if (!row || row.user_id !== userId) return false;
+    this.deactivateDevice(token);
+    return true;
   }
 
   markPushSent(eventIds: number[], now: string): void {
     const statement = this.sqlite.prepare("UPDATE subscription_events SET push_sent_at = ? WHERE id = ?");
     for (const id of eventIds) statement.run(now, id);
+  }
+
+  ensurePushDeliveries(eventId: number, tokens: string[], now: string): void {
+    const statement = this.sqlite.prepare(`
+      INSERT OR IGNORE INTO push_deliveries
+        (event_id, token, status, attempts, next_attempt_at, updated_at)
+      VALUES (?, ?, 'pending', 0, ?, ?)
+    `);
+    for (const token of tokens) statement.run(eventId, token, now, now);
+  }
+
+  getDuePushTokens(eventId: number, now: string, limit = 500): string[] {
+    const rows = this.sqlite.prepare(`
+      SELECT token FROM push_deliveries
+      WHERE event_id = ? AND status = 'pending' AND next_attempt_at <= ?
+      ORDER BY token LIMIT ?
+    `).all(eventId, now, limit) as Array<{ token: string }>;
+    return rows.map((row) => row.token);
+  }
+
+  markPushDelivery(input: {
+    eventId: number;
+    token: string;
+    status: "sent" | "invalid" | "pending";
+    now: string;
+    nextAttemptAt?: string;
+    error?: string;
+  }): void {
+    this.sqlite.prepare(`
+      UPDATE push_deliveries SET
+        status = ?,
+        attempts = attempts + 1,
+        next_attempt_at = ?,
+        last_error = ?,
+        updated_at = ?
+      WHERE event_id = ? AND token = ?
+    `).run(
+      input.status,
+      input.nextAttemptAt ?? input.now,
+      input.error?.slice(0, 1000) ?? null,
+      input.now,
+      input.eventId,
+      input.token,
+    );
+  }
+
+  completePushEventIfDelivered(eventId: number, now: string): boolean {
+    const result = this.sqlite.prepare(`
+      UPDATE subscription_events SET push_sent_at = ?
+      WHERE id = ? AND push_sent_at IS NULL
+        AND EXISTS (SELECT 1 FROM push_deliveries WHERE event_id = ?)
+        AND NOT EXISTS (
+          SELECT 1 FROM push_deliveries WHERE event_id = ? AND status = 'pending'
+        )
+    `).run(now, eventId, eventId, eventId);
+    return result.changes === 1;
+  }
+
+  private markCompletedPushEvents(): void {
+    this.sqlite.prepare(`
+      UPDATE subscription_events SET push_sent_at = COALESCE(push_sent_at, ?)
+      WHERE push_sent_at IS NULL
+        AND EXISTS (SELECT 1 FROM push_deliveries WHERE event_id = subscription_events.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM push_deliveries
+          WHERE event_id = subscription_events.id AND status = 'pending'
+        )
+    `).run(new Date().toISOString());
   }
 
   getPendingPushEvents(subscriptionId: string, limit = 100): Array<{ eventId: number; item: CollectedItem }> {
@@ -332,6 +590,7 @@ export class AppDatabase {
       userId: String(row.user_id),
       keyword: String(row.keyword),
       plan: JSON.parse(String(row.plan_json)) as SearchPlan,
+      active: Number(row.active) === 1,
       createdAt: String(row.created_at),
       nextRunAt: String(row.next_run_at),
     };

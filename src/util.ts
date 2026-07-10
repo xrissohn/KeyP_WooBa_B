@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { SourcePlan } from "./types.js";
 
 const TRACKING_PARAMS = new Set([
   "fbclid",
@@ -41,8 +42,15 @@ export function stripHtml(value: string): string {
     .trim();
 }
 
-export function sourceKey(source: object, index: number): string {
-  return `${index}:${stableId(JSON.stringify(source)).slice(0, 16)}`;
+export function sourceFingerprint(source: SourcePlan): string {
+  const query = "query" in source ? source.query?.trim().replace(/\s+/g, " ").toLocaleLowerCase() : undefined;
+  switch (source.provider) {
+    case "naver": return stableId(source.provider, source.vertical, query ?? "");
+    case "google":
+    case "saramin": return stableId(source.provider, query ?? "");
+    case "rss": return stableId(source.provider, new URL(source.url).toString(), query ?? "");
+    case "webhook": return stableId(source.provider, source.name);
+  }
 }
 
 export function asArray<T>(value: T | T[] | undefined): T[] {

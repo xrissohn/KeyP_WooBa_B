@@ -7,13 +7,13 @@ import { PollWorker } from "../src/worker.js";
 import type { CollectedItem, Connector, SearchPlan } from "../src/types.js";
 
 class SequenceConnector implements Connector {
-  private call = 0;
+  calls = 0;
 
   constructor(private readonly pages: CollectedItem[][]) {}
 
   async collect(): Promise<CollectedItem[]> {
-    const page = this.pages[Math.min(this.call, this.pages.length - 1)] ?? [];
-    this.call++;
+    const page = this.pages[Math.min(this.calls, this.pages.length - 1)] ?? [];
+    this.calls++;
     return page;
   }
 }
@@ -44,7 +44,8 @@ test("first poll establishes a baseline and later polls emit each item once", as
       db.markPushSent(events.map((event) => event.eventId), new Date().toISOString());
     },
   };
-  const worker = new PollWorker(db, registry, push as never, 5);
+  let now = new Date(createdAt);
+  const worker = new PollWorker(db, registry, push as never, 5, 5, () => now);
   const plan: SearchPlan = {
     topic: "news",
     normalizedKeywords: ["test"],
@@ -57,6 +58,7 @@ test("first poll establishes a baseline and later polls emit each item once", as
   await worker.run(db.getSubscription(id)!);
   assert.deepEqual(db.pollEvents(id, 0, 50).events, []);
 
+  now = new Date(now.getTime() + 60_000);
   await worker.run(db.getSubscription(id)!);
   const page = db.pollEvents(id, 0, 50);
   assert.equal(page.events.length, 1);
@@ -64,9 +66,43 @@ test("first poll establishes a baseline and later polls emit each item once", as
   assert.equal(page.events[0]?.item.url, "https://example.com/new");
   assert.equal(pushed.length, 1);
 
+  now = new Date(now.getTime() + 60_000);
   await worker.run(db.getSubscription(id)!);
   assert.equal(db.pollEvents(id, 0, 50).events.length, 1);
   assert.equal(pushed.length, 1);
+  db.close();
+});
+
+test("identical source plans share one provider request per cache interval", async () => {
+  const db = new AppDatabase(":memory:");
+  const connector = new SequenceConnector([[], []]);
+  const registry = new ConnectorRegistry({ naver: connector });
+  let now = new Date("2026-07-10T00:00:00.000Z");
+  const worker = new PollWorker(db, registry, { async send() {} }, 5, 5, () => now);
+  const plan: SearchPlan = {
+    topic: "news",
+    normalizedKeywords: ["shared"],
+    intervalSeconds: 60,
+    sources: [{ provider: "naver", vertical: "news", query: "shared query" }],
+  };
+  for (const userId of ["user-1", "user-2"]) {
+    db.createSubscription({
+      id: randomUUID(),
+      userId,
+      keyword: "shared query",
+      plan,
+      webhookSecret: randomUUID(),
+      now: now.toISOString(),
+    });
+  }
+
+  await worker.tick();
+  assert.equal(connector.calls, 1);
+
+  now = new Date(now.getTime() + 60_000);
+  await worker.tick();
+  assert.equal(connector.calls, 2);
+  assert.equal(db.getProviderUsage("naver", "2026-07-10"), 2);
   db.close();
 });
 
@@ -81,7 +117,8 @@ test("items published before registration are suppressed even when discovered la
   };
   const connector = new SequenceConnector([[], [oldItem]]);
   const registry = new ConnectorRegistry({ naver: connector });
-  const worker = new PollWorker(db, registry, { async send() {} }, 5);
+  let now = new Date("2026-07-10T00:00:00.000Z");
+  const worker = new PollWorker(db, registry, { async send() {} }, 5, 5, () => now);
   const id = randomUUID();
   db.createSubscription({
     id,
@@ -97,6 +134,7 @@ test("items published before registration are suppressed even when discovered la
     },
   });
   await worker.run(db.getSubscription(id)!);
+  now = new Date(now.getTime() + 60_000);
   await worker.run(db.getSubscription(id)!);
   assert.equal(db.pollEvents(id, 0, 50).events.length, 0);
   db.close();

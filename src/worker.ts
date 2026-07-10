@@ -1,12 +1,14 @@
 import type { AppDatabase } from "./db.js";
 import type { ConnectorRegistry } from "./connectors/index.js";
-import type { CollectedItem, StoredSubscription } from "./types.js";
-import { canonicalizeUrl, sourceKey } from "./util.js";
+import type { CollectedItem, SourceContext, SourcePlan, StoredSubscription } from "./types.js";
+import { config } from "./config.js";
+import { canonicalizeUrl, sourceFingerprint } from "./util.js";
 
 export class PollWorker {
   private timer?: NodeJS.Timeout;
   private ticking = false;
   private readonly running = new Set<string>();
+  private readonly sourceRequests = new Map<string, Promise<CollectedItem[]>>();
 
   constructor(
     private readonly db: AppDatabase,
@@ -16,6 +18,7 @@ export class PollWorker {
     },
     private readonly tickSeconds: number,
     private readonly concurrency = 5,
+    private readonly clock: () => Date = () => new Date(),
   ) {}
 
   start(): void {
@@ -34,7 +37,7 @@ export class PollWorker {
     if (this.ticking) return;
     this.ticking = true;
     try {
-      const due = this.db.listDueSubscriptions(new Date().toISOString());
+      const due = this.db.listDueSubscriptions(this.clock().toISOString());
       let offset = 0;
       const consume = async () => {
         while (offset < due.length) {
@@ -51,20 +54,15 @@ export class PollWorker {
   async run(subscription: StoredSubscription): Promise<void> {
     if (this.running.has(subscription.id)) return;
     this.running.add(subscription.id);
-    const startedAt = new Date();
+    const startedAt = this.clock();
     try {
-      for (const [index, source] of subscription.plan.sources.entries()) {
+      for (const source of subscription.plan.sources) {
         if (source.provider === "webhook") continue;
-        const key = sourceKey(source, index);
-        const connector = this.connectors.get(source.provider);
-        if (!connector) {
-          this.db.markSourceError(subscription.id, key, `No connector for ${source.provider}`);
-          continue;
-        }
+        const key = sourceFingerprint(source);
         const state = this.db.getSourceState(subscription.id, key);
         const isBaseline = !state.baselineCompletedAt;
         try {
-          const items = await connector.collect(source, {
+          const items = await this.collectSource(source, key, {
             subscriptionId: subscription.id,
             subscriptionCreatedAt: subscription.createdAt,
             lastSuccessfulAt: state.lastSuccessfulAt,
@@ -93,9 +91,91 @@ export class PollWorker {
       const pendingPush = this.db.getPendingPushEvents(subscription.id);
       await this.push.send(subscription.userId, subscription.id, pendingPush);
     } finally {
-      const next = new Date(startedAt.getTime() + subscription.plan.intervalSeconds * 1000).toISOString();
+      const scheduled = startedAt.getTime() + subscription.plan.intervalSeconds * 1000;
+      const next = new Date(Math.max(this.clock().getTime(), scheduled)).toISOString();
       this.db.scheduleNext(subscription.id, next, startedAt.toISOString());
       this.running.delete(subscription.id);
     }
+  }
+
+  private async collectSource(
+    source: Exclude<SourcePlan, { provider: "webhook" }>,
+    key: string,
+    context: SourceContext,
+  ): Promise<CollectedItem[]> {
+    const now = context.now.toISOString();
+    const cached = this.db.getSourceCache(key);
+    if (cached && cached.nextFetchAt > now) {
+      if (cached.items) return cached.items;
+      throw new Error(cached.lastError ?? `Source ${source.provider} is waiting for retry`);
+    }
+
+    const existing = this.sourceRequests.get(key);
+    if (existing) return existing;
+    const request = this.fetchAndCacheSource(source, key, context)
+      .finally(() => this.sourceRequests.delete(key));
+    this.sourceRequests.set(key, request);
+    return request;
+  }
+
+  private async fetchAndCacheSource(
+    source: Exclude<SourcePlan, { provider: "webhook" }>,
+    key: string,
+    context: SourceContext,
+  ): Promise<CollectedItem[]> {
+    const now = context.now;
+    const nowIso = now.toISOString();
+    const cached = this.db.getSourceCache(key);
+    if (cached && cached.nextFetchAt > nowIso) {
+      if (cached.items) return cached.items;
+      throw new Error(cached.lastError ?? `Source ${source.provider} is waiting for retry`);
+    }
+
+    const connector = this.connectors.get(source.provider);
+    if (!connector) throw new Error(`No connector for ${source.provider}`);
+    const policy = config.providers[source.provider];
+    const usageDay = this.usageDay(now, policy.budgetTimeZone);
+    if (!this.db.tryConsumeProviderBudget(source.provider, usageDay, 1, policy.dailyBudget)) {
+      const error = `${source.provider} daily request budget exhausted`;
+      this.db.recordSourceCacheFailure({
+        sourceKey: key,
+        source,
+        error,
+        nextFetchAt: new Date(now.getTime() + 3_600_000).toISOString(),
+      });
+      throw new Error(error);
+    }
+
+    try {
+      const items = await connector.collect(source, {
+        ...context,
+        lastSuccessfulAt: cached?.fetchedAt ?? context.lastSuccessfulAt,
+      });
+      const nextFetchAt = new Date(now.getTime() + policy.minIntervalSeconds * 1000).toISOString();
+      this.db.recordSourceCacheSuccess({ sourceKey: key, source, items, fetchedAt: nowIso, nextFetchAt });
+      return items;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failures = Math.min(6, (cached?.consecutiveFailures ?? 0) + 1);
+      const backoffSeconds = Math.min(3600, 60 * (2 ** (failures - 1)));
+      this.db.recordSourceCacheFailure({
+        sourceKey: key,
+        source,
+        error: message,
+        nextFetchAt: new Date(now.getTime() + backoffSeconds * 1000).toISOString(),
+      });
+      throw error;
+    }
+  }
+
+  private usageDay(date: Date, timeZone: string): string {
+    const parts = new Intl.DateTimeFormat("en", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date);
+    const value = (type: "year" | "month" | "day") => parts.find((part) => part.type === type)?.value;
+    return `${value("year")}-${value("month")}-${value("day")}`;
   }
 }

@@ -1,6 +1,6 @@
 import { config } from "./config.js";
 import { fetchJson } from "./http.js";
-import { searchPlanSchema, type SearchPlan } from "./types.js";
+import { searchPlanSchema, type SearchPlan, type SourcePlan } from "./types.js";
 
 interface ChatResponse {
   choices?: Array<{ message?: { content?: string } }>;
@@ -51,8 +51,12 @@ export interface PlannerResult {
 export class SearchPlanner {
   async create(keyword: string): Promise<PlannerResult> {
     if (!config.ai.key) return { plan: this.fallback(keyword), mode: "fallback", fallbackReason: "AI_API_KEY is not configured" };
+    if (this.enabledProviders().length === 0) {
+      return { plan: this.fallback(keyword), mode: "fallback", fallbackReason: "No external search provider is configured" };
+    }
     try {
       const enabledRss = config.defaultRssFeeds.join(", ") || "none";
+      const enabledProviders = this.enabledProviders().join(", ") || "webhook only";
       const response = await fetchJson<ChatResponse>(config.ai.url, {
         method: "POST",
         headers: { authorization: `Bearer ${config.ai.key}`, "content-type": "application/json" },
@@ -69,6 +73,7 @@ export class SearchPlanner {
               content: [
                 "Convert a Korean user's monitoring interest into a conservative search plan.",
                 "Use only the providers in the schema.",
+                `Enabled providers: ${enabledProviders}. Do not select disabled providers.`,
                 "Use saramin only for employment or recruiting intent.",
                 "Use RSS only with one of the explicitly allowed URLs.",
                 "Prefer short literal queries; do not invent facts or URLs.",
@@ -81,7 +86,7 @@ export class SearchPlanner {
       });
       const content = response.choices?.[0]?.message?.content;
       if (!content) throw new Error("AI response did not contain a plan");
-      const plan = searchPlanSchema.parse(JSON.parse(content));
+      const plan = this.withEnabledSources(searchPlanSchema.parse(JSON.parse(content)));
       const allowedFeeds = new Set(config.defaultRssFeeds);
       if (plan.sources.some((source) => source.provider === "rss" && !allowedFeeds.has(source.url))) {
         throw new Error("AI selected an RSS URL outside DEFAULT_RSS_FEEDS");
@@ -100,19 +105,37 @@ export class SearchPlanner {
     const cleaned = keyword.trim().replace(/\s+/g, " ").slice(0, 300);
     const isJob = /(채용|취업|구인|직무|개발자|엔지니어|인턴|경력직)/i.test(cleaned);
     const tokens = cleaned.split(/[\s,]+/).filter((token) => token.length > 1).slice(0, 12);
-    const sources: SearchPlan["sources"] = [
-      { provider: "naver", vertical: "news", query: cleaned },
-      { provider: "google", query: cleaned },
-    ];
-    if (isJob) sources.push({ provider: "saramin", query: cleaned });
+    const sources: SearchPlan["sources"] = [];
+    if (config.naver.clientId && config.naver.clientSecret) {
+      sources.push({ provider: "naver", vertical: "news", query: cleaned });
+    }
+    if (config.google.apiKey && config.google.engineId) sources.push({ provider: "google", query: cleaned });
+    if (isJob && config.saramin.accessKey) sources.push({ provider: "saramin", query: cleaned });
     for (const url of config.defaultRssFeeds.slice(0, 5)) {
       sources.push({ provider: "rss", url, query: cleaned });
     }
+    if (sources.length === 0) sources.push({ provider: "webhook", name: "default" });
     return searchPlanSchema.parse({
       topic: isJob ? "employment" : "general",
       normalizedKeywords: tokens.length > 0 ? tokens : [cleaned],
       intervalSeconds: config.pollIntervalSeconds,
       sources,
     });
+  }
+
+  private enabledProviders(): SourcePlan["provider"][] {
+    const providers: SourcePlan["provider"][] = [];
+    if (config.naver.clientId && config.naver.clientSecret) providers.push("naver");
+    if (config.google.apiKey && config.google.engineId) providers.push("google");
+    if (config.saramin.accessKey) providers.push("saramin");
+    if (config.defaultRssFeeds.length > 0) providers.push("rss");
+    return providers;
+  }
+
+  private withEnabledSources(plan: SearchPlan): SearchPlan {
+    const enabled = new Set(this.enabledProviders());
+    const sources = plan.sources.filter((source) => enabled.has(source.provider));
+    if (sources.length === 0) throw new Error("AI plan did not contain an enabled provider");
+    return searchPlanSchema.parse({ ...plan, sources });
   }
 }

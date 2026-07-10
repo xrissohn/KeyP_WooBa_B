@@ -47,7 +47,7 @@ export class RssConnector implements Connector {
       const guid = text(node.guid ?? node.id) ?? stableId(link);
       const date = text(node.pubDate ?? node.published ?? node.updated ?? node["dc:date"]);
       return [{
-        provider: `rss:${new URL(source.url).hostname}`,
+        provider: `rss:${stableId(source.url).slice(0, 24)}`,
         externalId: guid,
         url: link,
         title: stripHtml(title),

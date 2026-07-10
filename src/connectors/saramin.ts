@@ -15,6 +15,8 @@ interface SaraminJob {
 
 interface SaraminResponse {
   jobs?: { job?: SaraminJob | SaraminJob[] };
+  code?: number;
+  message?: string;
 }
 
 function timestampToIso(value: string | number | undefined): string | undefined {
@@ -33,32 +35,29 @@ export class SaraminConnector implements Connector {
 
     const overlapFrom = new Date(context.lastSuccessfulAt ?? context.subscriptionCreatedAt);
     overlapFrom.setMinutes(overlapFrom.getMinutes() - 10);
+    const url = new URL("https://oapi.saramin.co.kr/job-search");
+    url.searchParams.set("access-key", this.accessKey);
+    url.searchParams.set("keywords", source.query);
+    url.searchParams.set("published_min", String(Math.floor(overlapFrom.getTime() / 1000)));
+    url.searchParams.set("published_max", String(Math.floor(context.now.getTime() / 1000)));
+    url.searchParams.set("sort", "pd");
+    url.searchParams.set("start", "0");
+    url.searchParams.set("count", "110");
+    url.searchParams.set("fields", "posting-date expiration-date keyword-code");
+    const data = await fetchJson<SaraminResponse>(url);
+    if (data.code) throw new Error(`Saramin API ${data.code}: ${data.message ?? "unknown error"}`);
     const collected: CollectedItem[] = [];
-    for (let page = 0; page < 10; page++) {
-      const url = new URL("https://oapi.saramin.co.kr/job-search");
-      url.searchParams.set("access-key", this.accessKey);
-      url.searchParams.set("keywords", source.query);
-      url.searchParams.set("published_min", String(Math.floor(overlapFrom.getTime() / 1000)));
-      url.searchParams.set("published_max", String(Math.floor(context.now.getTime() / 1000)));
-      url.searchParams.set("sort", "pa");
-      url.searchParams.set("start", String(page));
-      url.searchParams.set("count", "110");
-      url.searchParams.set("fields", "posting-date expiration-date keyword-code");
-      const data = await fetchJson<SaraminResponse>(url);
-      const jobs = asArray(data.jobs?.job);
-      for (const job of jobs) {
-        if (!job.url || !job.position?.title) continue;
-        collected.push({
-          provider: "saramin",
-          externalId: String(job.id ?? stableId(job.url)),
-          url: job.url,
-          title: job.position.title,
-          summary: [job.company?.detail?.name, job.position.location?.name].filter(Boolean).join(" · "),
-          publishedAt: timestampToIso(job["posting-timestamp"]),
-          raw: job,
-        });
-      }
-      if (jobs.length < 110) break;
+    for (const job of asArray(data.jobs?.job)) {
+      if (!job.url || !job.position?.title) continue;
+      collected.push({
+        provider: "saramin",
+        externalId: String(job.id ?? stableId(job.url)),
+        url: job.url,
+        title: job.position.title,
+        summary: [job.company?.detail?.name, job.position.location?.name].filter(Boolean).join(" · "),
+        publishedAt: timestampToIso(job["posting-timestamp"]),
+        raw: job,
+      });
     }
     return collected;
   }

@@ -11,6 +11,11 @@ const deviceBody = z.object({
   token: z.string().min(20).max(4096),
   platform: z.enum(["ios", "android", "web"]),
 });
+const subscriptionStatusBody = z.object({ active: z.boolean() });
+const eventQuery = z.object({
+  cursor: z.coerce.number().int().min(0).default(0),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
 const webhookItem = z.object({
   id: z.union([z.string(), z.number()]).optional(),
   url: z.string().url(),
@@ -93,6 +98,11 @@ export function buildApp(dependencies: {
     });
   });
 
+  app.get("/v1/subscriptions", async (request) => {
+    const owner = userId(request);
+    return { subscriptions: dependencies.db.listSubscriptions(owner) };
+  });
+
   app.get("/v1/subscriptions/:id", async (request, reply) => {
     const owner = userId(request);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
@@ -108,22 +118,45 @@ export function buildApp(dependencies: {
     return reply.status(204).send();
   });
 
+  app.patch("/v1/subscriptions/:id/status", async (request, reply) => {
+    const owner = userId(request);
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const { active } = subscriptionStatusBody.parse(request.body);
+    if (!dependencies.db.setSubscriptionActive(id, owner, active, new Date().toISOString())) {
+      return reply.status(404).send({ error: "not_found" });
+    }
+    if (active) void dependencies.worker.tick();
+    return reply.status(204).send();
+  });
+
   app.get("/v1/subscriptions/:id/events", async (request, reply) => {
     const owner = userId(request);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const query = z.object({
-      cursor: z.coerce.number().int().min(0).default(0),
-      limit: z.coerce.number().int().min(1).max(100).default(50),
-    }).parse(request.query);
+    const query = eventQuery.parse(request.query);
     const subscription = dependencies.db.getSubscription(id);
     if (!subscription || subscription.userId !== owner) return reply.status(404).send({ error: "not_found" });
     return dependencies.db.pollEvents(id, query.cursor, query.limit);
+  });
+
+  app.get("/v1/events", async (request) => {
+    const owner = userId(request);
+    const query = eventQuery.parse(request.query);
+    return dependencies.db.pollEventsForUser(owner, query.cursor, query.limit);
   });
 
   app.post("/v1/devices", async (request, reply) => {
     const owner = userId(request);
     const body = deviceBody.parse(request.body);
     dependencies.db.registerDevice(owner, body.token, body.platform, new Date().toISOString());
+    return reply.status(204).send();
+  });
+
+  app.delete("/v1/devices", async (request, reply) => {
+    const owner = userId(request);
+    const { token } = deviceBody.pick({ token: true }).parse(request.body);
+    if (!dependencies.db.deactivateDeviceForUser(token, owner)) {
+      return reply.status(404).send({ error: "not_found" });
+    }
     return reply.status(204).send();
   });
 
@@ -140,7 +173,7 @@ export function buildApp(dependencies: {
     const newEvents = [];
     for (const incoming of body.items) {
       const item = {
-        provider: `webhook:${params.source}`,
+        provider: `webhook:${stableId(subscription.id, params.source).slice(0, 24)}`,
         externalId: String(incoming.id ?? stableId(canonicalizeUrl(incoming.url))),
         url: incoming.url,
         title: incoming.title,
