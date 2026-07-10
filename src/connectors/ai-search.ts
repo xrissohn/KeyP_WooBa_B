@@ -57,6 +57,14 @@ function unique(hits: SearchHit[]): SearchHit[] {
   });
 }
 
+function hostname(value: string): string {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return "Web source";
+  }
+}
+
 export class AiSearchConnector implements Connector {
   constructor(private readonly options = config.aiSearch) {}
 
@@ -73,6 +81,10 @@ export class AiSearchConnector implements Connector {
               ? await this.xai(source.query)
               : undefined;
         if (!hits) continue;
+        if (hits.length === 0) {
+          failures.push(`${engine}: no grounded search results`);
+          continue;
+        }
         return unique(hits).map((hit) => ({
           provider: `ai_search:${engine}`,
           externalId: stableId(hit.url),
@@ -80,7 +92,7 @@ export class AiSearchConnector implements Connector {
           title: stripHtml(hit.title).slice(0, 500),
           summary: hit.snippet ? stripHtml(hit.snippet).slice(0, 2000) : undefined,
           publishedAt: hit.publishedAt,
-          raw: { engine, query: source.query, ...hit },
+          raw: { engine, query: source.query, sourceUrl: hit.url },
         }));
       } catch (error) {
         failures.push(`${engine}: ${error instanceof Error ? error.message : String(error)}`);
@@ -128,7 +140,7 @@ export class AiSearchConnector implements Connector {
     const answer = candidate?.content?.parts?.map((part) => part.text).filter(Boolean).join(" ");
     return (candidate?.groundingMetadata?.groundingChunks ?? []).flatMap((chunk) => {
       const web = chunk.web;
-      return web?.uri ? [{ title: web.title ?? new URL(web.uri).hostname, url: web.uri, snippet: answer }] : [];
+      return web?.uri ? [{ title: web.title ?? hostname(web.uri), url: web.uri, snippet: answer }] : [];
     });
   }
 
@@ -151,7 +163,7 @@ export class AiSearchConnector implements Connector {
       ? { url: citation }
       : citation);
     return [...annotations, ...citations].flatMap((citation) => citation.url ? [{
-      title: citation.title ?? new URL(citation.url).hostname,
+      title: citation.title ?? hostname(citation.url),
       url: citation.url,
       snippet: answer,
     }] : []);

@@ -8,6 +8,11 @@ interface ConfigSnapshot {
   naverClientId?: string;
   naverClientSecret?: string;
   xBearerToken?: string;
+  perplexityKey?: string;
+  geminiKey?: string;
+  xaiKey?: string;
+  serpApiKey?: string;
+  youtubeKey?: string;
   rss: string[];
 }
 
@@ -17,6 +22,11 @@ function snapshotConfig(): ConfigSnapshot {
     naverClientId: config.naver.clientId,
     naverClientSecret: config.naver.clientSecret,
     xBearerToken: config.x.bearerToken,
+    perplexityKey: config.aiSearch.perplexity.key,
+    geminiKey: config.aiSearch.gemini.key,
+    xaiKey: config.aiSearch.xai.key,
+    serpApiKey: config.serpapi.key,
+    youtubeKey: config.youtube.key,
     rss: [...config.defaultRssFeeds],
   };
 }
@@ -26,6 +36,11 @@ function restoreConfig(snapshot: ConfigSnapshot): void {
   config.naver.clientId = snapshot.naverClientId;
   config.naver.clientSecret = snapshot.naverClientSecret;
   config.x.bearerToken = snapshot.xBearerToken;
+  config.aiSearch.perplexity.key = snapshot.perplexityKey;
+  config.aiSearch.gemini.key = snapshot.geminiKey;
+  config.aiSearch.xai.key = snapshot.xaiKey;
+  config.serpapi.key = snapshot.serpApiKey;
+  config.youtube.key = snapshot.youtubeKey;
   config.defaultRssFeeds.splice(0, config.defaultRssFeeds.length, ...snapshot.rss);
 }
 
@@ -33,6 +48,11 @@ function disableProviders(): void {
   config.naver.clientId = undefined;
   config.naver.clientSecret = undefined;
   config.x.bearerToken = undefined;
+  config.aiSearch.perplexity.key = undefined;
+  config.aiSearch.gemini.key = undefined;
+  config.aiSearch.xai.key = undefined;
+  config.serpapi.key = undefined;
+  config.youtube.key = undefined;
   config.defaultRssFeeds.splice(0);
 }
 
@@ -92,6 +112,8 @@ test("AI plans retain only configured providers", async () => {
     };
     assert.equal(responseFormat.type, "json_schema");
     const sourceVariants = responseFormat.json_schema?.schema?.properties?.sources?.items;
+    const sourceArray = responseFormat.json_schema?.schema?.properties?.sources as { minItems?: number } | undefined;
+    assert.equal(sourceArray?.minItems, 2);
     assert.ok(Array.isArray(sourceVariants?.anyOf));
     assert.equal(sourceVariants?.oneOf, undefined);
     for (const variant of sourceVariants.anyOf as Array<{ properties?: { provider?: { type?: string } } }>) {

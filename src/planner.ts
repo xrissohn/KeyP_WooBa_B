@@ -16,7 +16,7 @@ const PLAN_JSON_SCHEMA = {
     intervalSeconds: { type: "integer", minimum: 60, maximum: 86400 },
     sources: {
       type: "array",
-      minItems: 1,
+      minItems: 2,
       maxItems: 12,
       items: {
         anyOf: [
