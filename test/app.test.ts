@@ -78,7 +78,9 @@ test("webhook events are authenticated, deduplicated, and available through curs
   });
   assert.equal(events.statusCode, 200);
   assert.equal(events.json().events.length, 1);
+  assert.equal(events.json().events[0].bookmarked, false);
   assert.equal(events.json().nextCursor > 0, true);
+  const eventCursor = events.json().events[0].cursor as number;
 
   const userEvents = await app.inject({
     method: "GET",
@@ -86,6 +88,57 @@ test("webhook events are authenticated, deduplicated, and available through curs
     headers: { "x-firebase-installation-id": FID_ONE },
   });
   assert.equal(userEvents.json().events.length, 1);
+  const provider = userEvents.json().events[0].item.provider as string;
+  assert.equal((await app.inject({
+    method: "GET",
+    url: `/v1/events?cursor=0&subscriptionId=${subscription.id}&provider=${encodeURIComponent(provider)}&q=Release&bookmarked=false`,
+    headers: { "x-firebase-installation-id": FID_ONE },
+  })).json().events.length, 1);
+  assert.equal((await app.inject({
+    method: "GET",
+    url: `/v1/subscriptions/${subscription.id}/events?cursor=0&q=missing`,
+    headers: { "x-firebase-installation-id": FID_ONE },
+  })).json().events.length, 0);
+
+  const bookmarked = await app.inject({
+    method: "PATCH",
+    url: `/v1/events/${eventCursor}/bookmark`,
+    headers: { "x-firebase-installation-id": FID_ONE },
+    payload: { bookmarked: true },
+  });
+  assert.equal(bookmarked.statusCode, 204);
+  await registerInstallation(app, FID_TWO);
+  assert.equal((await app.inject({
+    method: "PATCH",
+    url: `/v1/events/${eventCursor}/bookmark`,
+    headers: { "x-firebase-installation-id": FID_TWO },
+    payload: { bookmarked: false },
+  })).statusCode, 404);
+  const bookmarkPage = await app.inject({
+    method: "GET",
+    url: "/v1/bookmarks?cursor=0",
+    headers: { "x-firebase-installation-id": FID_ONE },
+  });
+  assert.equal(bookmarkPage.statusCode, 200);
+  assert.equal(bookmarkPage.json().events.length, 1);
+  assert.equal(bookmarkPage.json().events[0].bookmarked, true);
+  assert.equal((await app.inject({
+    method: "GET",
+    url: `/v1/events?cursor=0&subscriptionId=${subscription.id}&bookmarked=true`,
+    headers: { "x-firebase-installation-id": FID_ONE },
+  })).json().events.length, 1);
+  const unbookmarked = await app.inject({
+    method: "PATCH",
+    url: `/v1/events/${eventCursor}/bookmark`,
+    headers: { "x-firebase-installation-id": FID_ONE },
+    payload: { bookmarked: false },
+  });
+  assert.equal(unbookmarked.statusCode, 204);
+  assert.equal((await app.inject({
+    method: "GET",
+    url: "/v1/bookmarks?cursor=0",
+    headers: { "x-firebase-installation-id": FID_ONE },
+  })).json().events.length, 0);
 
   const subscriptions = await app.inject({
     method: "GET",
@@ -282,6 +335,18 @@ test("API rejects unauthenticated, invalid, and cross-user requests", async () =
     url: `/v1/subscriptions/${id}/events?cursor=-1`,
     headers: { "x-firebase-installation-id": FID_ONE },
   })).statusCode, 400);
+  assert.equal((await app.inject({
+    method: "PATCH",
+    url: "/v1/events/0/bookmark",
+    headers: { "x-firebase-installation-id": FID_ONE },
+    payload: { bookmarked: true },
+  })).statusCode, 400);
+  assert.equal((await app.inject({
+    method: "PATCH",
+    url: "/v1/events/1/bookmark",
+    headers: { "x-firebase-installation-id": FID_TWO },
+    payload: { bookmarked: true },
+  })).statusCode, 404);
 
   await app.close();
   db.close();
@@ -365,6 +430,39 @@ test("App Check is required when its verifier enforces it", async () => {
     },
     payload: { platform: "android" },
   })).statusCode, 200);
+
+  await app.close();
+  db.close();
+});
+
+test("temporary anonymous mode accepts requests without FID or App Check", async () => {
+  const db = new AppDatabase(":memory:");
+  const plan: SearchPlan = {
+    topic: "general",
+    normalizedKeywords: ["release"],
+    intervalSeconds: 60,
+    sources: [{ provider: "webhook", name: "default" }],
+  };
+  const app = buildApp({
+    db,
+    planner: { async create() { return { plan, mode: "fallback" }; } },
+    worker: { async tick() {} },
+    identity: {
+      installationIdRequired: false,
+      anonymousInstallationId: "temporary-test-installation",
+    },
+    push: { async send() {} },
+  }, { logger: false });
+
+  const created = await app.inject({
+    method: "POST",
+    url: "/v1/subscriptions",
+    payload: { keyword: "release notice" },
+  });
+  assert.equal(created.statusCode, 201);
+  const subscriptions = await app.inject({ method: "GET", url: "/v1/subscriptions" });
+  assert.equal(subscriptions.statusCode, 200);
+  assert.equal(subscriptions.json().subscriptions[0].installationId, "temporary-test-installation");
 
   await app.close();
   db.close();

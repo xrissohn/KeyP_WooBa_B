@@ -56,7 +56,9 @@ pnpm dev
 | `DEFAULT_RSS_FEEDS` | AI가 선택할 수 있는 RSS URL allowlist |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | FCM 서비스 계정 JSON 문자열 |
 | `FIREBASE_PROJECT_ID` | Application Default Credentials 사용 시 프로젝트 ID |
-| `FIREBASE_APP_CHECK_ENFORCED` | App Check token 필수 검증 여부, production 기본 `true` |
+| `FIREBASE_APP_CHECK_ENFORCED` | App Check token 필수 검증 여부, 현재 기본 `false` |
+| `FIREBASE_INSTALLATION_IDENTITY_ENABLED` | FID 기반 데이터 격리 사용 여부, 현재 기본 `false` |
+| `ANONYMOUS_INSTALLATION_ID` | FID 비활성화 중 모든 요청에 사용하는 임시 ID |
 | `WORKER_CONCURRENCY` | 동시에 실행할 구독 수, 기본 5 |
 | `*_MIN_INTERVAL_SECONDS` | 공급자별 동일 검색 계획의 최소 재호출 간격 |
 | `*_DAILY_BUDGET` | 공급자 전체 일일 안전 호출량, 0은 제한 없음 |
@@ -69,11 +71,11 @@ NAVER 검색의 API HUB 이전으로 endpoint가 변경되면 `NAVER_SEARCH_BASE
 
 전체 API 명세는 [docs/openapi.yaml](docs/openapi.yaml), 사람이 읽기 위한 요약은 [docs/API.md](docs/API.md)를 참고하십시오. OpenAPI 명세와 실제 Fastify route의 일치 여부는 CI에서 자동 검증합니다.
 
-로그인 없이 Firebase Installation ID(FID)를 설치 단위 사용자 키로 사용합니다. 앱 재설치나 데이터 삭제로 FID가 바뀌면 기존 구독을 복구할 수 없으며 새 사용자로 취급됩니다. 운영 환경에서는 모든 앱 API 요청에 `x-firebase-appcheck`도 함께 전달해야 합니다.
+현재는 연동 개발을 위해 FID와 App Check 검증을 임시 비활성화했습니다. 일반 앱 API는 인증 헤더 없이 호출할 수 있고 모든 요청은 `ANONYMOUS_INSTALLATION_ID` 한 개로 처리됩니다. 따라서 여러 실제 사용자가 접속하면 구독과 feed가 서로 노출되므로 외부 공개 환경에서는 사용하면 안 됩니다. 복구 시 `FIREBASE_INSTALLATION_IDENTITY_ENABLED=true`와 `FIREBASE_APP_CHECK_ENFORCED=true`를 설정합니다.
 
 ### 1. Firebase 설치 및 FCM 토큰 등록
 
-앱에서 Firebase Installations SDK로 FID를 조회한 후 최초 한 번 등록합니다. FCM token은 함께 등록하거나 이후 `/v1/devices`로 갱신할 수 있습니다.
+현재 임시 익명 모드에서는 이 단계와 두 Firebase header를 생략할 수 있습니다. FID 모드를 다시 켠 경우 앱에서 Firebase Installations SDK로 FID를 조회한 후 최초 한 번 등록합니다.
 
 ```bash
 curl -X PUT http://127.0.0.1:3000/v1/installations/current \
@@ -102,6 +104,18 @@ curl 'http://127.0.0.1:3000/v1/events?cursor=0&limit=50' \
   -H 'x-firebase-installation-id: cFirebaseInstallationId123'
 ```
 
+이벤트는 cursor 단위로 북마크할 수 있고, 북마크된 이벤트만 별도로 조회할 수 있습니다.
+
+```bash
+curl -X PATCH http://127.0.0.1:3000/v1/events/EVENT_CURSOR/bookmark \
+  -H 'content-type: application/json' \
+  -H 'x-firebase-installation-id: cFirebaseInstallationId123' \
+  -d '{"bookmarked":true}'
+
+curl 'http://127.0.0.1:3000/v1/bookmarks?cursor=0&limit=50' \
+  -H 'x-firebase-installation-id: cFirebaseInstallationId123'
+```
+
 특정 구독만 조회할 수도 있습니다.
 
 ```bash
@@ -110,6 +124,8 @@ curl 'http://127.0.0.1:3000/v1/subscriptions/SUBSCRIPTION_ID/events?cursor=0&lim
 ```
 
 응답의 `nextCursor`를 저장하고 다음 요청에 사용합니다. cursor는 검색 API의 offset이 아니라 내부의 단조 증가 이벤트 ID이므로 응답 순위 변화에 영향을 받지 않습니다.
+
+이벤트 조회는 `subscriptionId`, `provider`, `q`, `from`, `to`, `bookmarked` query로 필터링할 수 있습니다. 예를 들어 특정 구독의 북마크된 NAVER 뉴스만 보려면 `/v1/events?subscriptionId=SUBSCRIPTION_ID&provider=naver%3Anews&bookmarked=true`처럼 호출합니다.
 
 구독 목록은 `GET /v1/subscriptions`, 알림 OFF/ON은 다음 API를 사용합니다. `active=false`인 동안에는 해당 구독의 외부 수집, webhook 입력, 신규 feed 생성과 FCM 전송이 모두 중지되며 기존 feed는 유지됩니다.
 

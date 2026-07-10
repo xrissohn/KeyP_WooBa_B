@@ -25,6 +25,10 @@ const app = apiEnabled
       planner,
       worker: workerEnabled ? worker : { async tick() {} },
       appCheck,
+      identity: {
+        installationIdRequired: config.firebase.installationIdentityEnabled,
+        anonymousInstallationId: config.firebase.anonymousInstallationId,
+      },
       push,
     })
   : undefined;

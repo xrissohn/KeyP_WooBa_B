@@ -118,7 +118,9 @@ export const config = {
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID,
     serviceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
-    appCheckEnforced: bool("FIREBASE_APP_CHECK_ENFORCED", process.env.NODE_ENV === "production"),
+    appCheckEnforced: bool("FIREBASE_APP_CHECK_ENFORCED", false),
+    installationIdentityEnabled: bool("FIREBASE_INSTALLATION_IDENTITY_ENABLED", false),
+    anonymousInstallationId: process.env.ANONYMOUS_INSTALLATION_ID ?? "temporary-anonymous-installation",
   },
   defaultRssFeeds: csv("DEFAULT_RSS_FEEDS", ""),
 };

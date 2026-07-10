@@ -5,15 +5,15 @@
 ## 공통 규칙
 
 - 개발 서버: `http://localhost:3000`
-- 앱 API 설치 식별: `x-firebase-installation-id` header
-- 운영 앱 검증: `x-firebase-appcheck` header
+- 앱 API 설치 식별: 현재 임시 비활성화, 활성화 시 `x-firebase-installation-id` header
+- 운영 앱 검증: 현재 임시 비활성화, 활성화 시 `x-firebase-appcheck` header
 - Webhook 인증: `x-webhook-secret` header
 - 날짜와 시각: ISO 8601 UTC 문자열
 - 이벤트 cursor: 서버 내부 이벤트 ID. 응답의 `nextCursor`를 다음 요청에 전달
 - 기본 page size: 50, 최대 100
 - `204` 응답에는 body가 없음
 
-FID는 Firebase 앱 설치 단위를 식별하며 인증 계정이 아닙니다. 최초 요청은 `PUT /v1/installations/current`여야 하며 운영 환경에서는 App Check token 검증을 활성화해야 합니다. FID가 회전하면 새 사용자로 취급됩니다.
+현재 모든 헤더 없는 요청은 하나의 `ANONYMOUS_INSTALLATION_ID`로 처리됩니다. 이는 개발 편의를 위한 임시 모드이며 사용자 간 데이터 격리가 없습니다. FID 모드를 복구하면 최초 요청은 `PUT /v1/installations/current`여야 하고 App Check token도 함께 검증합니다.
 
 ## Endpoint 요약
 
@@ -30,6 +30,8 @@ FID는 Firebase 앱 설치 단위를 식별하며 인증 계정이 아닙니다.
 | `PATCH` | `/v1/subscriptions/{id}/status` | FID + App Check | 알림 및 수집 일시정지/재개 |
 | `GET` | `/v1/subscriptions/{id}/events` | FID + App Check | 특정 구독 이벤트 polling |
 | `GET` | `/v1/events` | FID + App Check | 전체 구독 이벤트 polling |
+| `GET` | `/v1/bookmarks` | FID + App Check | 북마크된 이벤트만 polling |
+| `PATCH` | `/v1/events/{cursor}/bookmark` | FID + App Check | 이벤트 북마크 상태 변경 |
 | `POST` | `/v1/devices` | FID + App Check | FCM token 등록 |
 | `DELETE` | `/v1/devices` | FID + App Check | FCM token 해제 |
 | `POST` | `/v1/webhooks/{subscriptionId}/{source}` | Webhook | 외부 이벤트 수신 |
@@ -37,6 +39,8 @@ FID는 Firebase 앱 설치 단위를 식별하며 인증 계정이 아닙니다.
 검색 계획의 provider는 `naver`, `x`, `rss`, `ai_search`, `serpapi`, `youtube`, `webhook`을 지원합니다. 검색형 source의 신규 후보는 원래 자연어 의도에 대한 관련도와 출처 신뢰도 AI 검증을 모두 통과해야 polling과 FCM에 노출됩니다.
 
 `active=false`인 구독은 목록과 기존 feed에는 남지만 외부 수집, webhook 입력, 신규 feed 생성 및 FCM 전송을 하지 않습니다. 구독 삭제 시 `active=0`과 `deleted_at`을 기록하며 목록·상세·통합 feed에서 제외합니다. 관련 DB row와 기존 이벤트/아이템은 삭제하지 않습니다.
+
+이벤트 polling endpoint는 `subscriptionId`, `provider`, `q`, `from`, `to`, `bookmarked` query로 필터링할 수 있습니다. `GET /v1/subscriptions/{id}/events`는 이미 특정 구독으로 고정되어 있으므로 나머지 item 필터만 함께 사용합니다.
 
 ## Polling 예시
 

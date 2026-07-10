@@ -19,10 +19,20 @@ export interface EventPage {
       firstSeenAt: string;
     };
     createdAt: string;
+    bookmarked: boolean;
     review?: ItemReview;
   }>;
   nextCursor: number;
   hasMore: boolean;
+}
+
+export interface EventFilters {
+  subscriptionId?: string;
+  provider?: string;
+  query?: string;
+  from?: string;
+  to?: string;
+  bookmarked?: boolean;
 }
 
 export interface StoredSourceCache {
@@ -136,6 +146,8 @@ export class AppDatabase {
         review_reason TEXT,
         review_signals_json TEXT,
         review_model TEXT,
+        bookmarked INTEGER NOT NULL DEFAULT 0,
+        bookmarked_at TEXT,
         UNIQUE(subscription_id, item_id)
       );
 
@@ -179,6 +191,8 @@ export class AppDatabase {
     this.ensureColumn("subscription_events", "review_reason", "TEXT");
     this.ensureColumn("subscription_events", "review_signals_json", "TEXT");
     this.ensureColumn("subscription_events", "review_model", "TEXT");
+    this.ensureColumn("subscription_events", "bookmarked", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("subscription_events", "bookmarked_at", "TEXT");
     this.sqlite.exec(`
       UPDATE subscriptions SET installation_id = user_id WHERE installation_id IS NULL;
       UPDATE devices SET installation_id = user_id WHERE installation_id IS NULL;
@@ -198,6 +212,8 @@ export class AppDatabase {
         ON subscriptions(installation_id, deleted_at, created_at);
       CREATE INDEX IF NOT EXISTS subscriptions_runnable_idx
         ON subscriptions(active, deleted_at, next_run_at, lease_until);
+      CREATE INDEX IF NOT EXISTS subscription_events_bookmark_idx
+        ON subscription_events(subscription_id, bookmarked, visibility, id);
     `);
   }
 
@@ -724,41 +740,122 @@ export class AppDatabase {
     `).get(subscriptionId, provider, externalId));
   }
 
-  pollEvents(subscriptionId: string, cursor: number, limit: number): EventPage {
+  pollEvents(subscriptionId: string, cursor: number, limit: number, filters: Omit<EventFilters, "subscriptionId"> = {}): EventPage {
+    const clauses = ["e.subscription_id = ?", "e.visibility = 'visible'", "e.id > ?"];
+    const params: SqliteValue[] = [subscriptionId, cursor];
+    this.appendEventFilters(clauses, params, filters);
     const rows = this.sqlite.prepare(`
       SELECT
         e.id, e.subscription_id, e.created_at,
         i.provider, i.external_id, i.canonical_url, i.title, i.summary,
         i.published_at, i.first_seen_at,
         e.review_status, e.relevance_score, e.credibility_score,
-        e.review_reason, e.review_signals_json, e.review_model
+        e.review_reason, e.review_signals_json, e.review_model,
+        e.bookmarked
       FROM subscription_events e
       JOIN items i ON i.id = e.item_id
-      WHERE e.subscription_id = ? AND e.visibility = 'visible' AND e.id > ?
+      WHERE ${clauses.join(" AND ")}
       ORDER BY e.id ASC LIMIT ?
-    `).all(subscriptionId, cursor, limit + 1) as Array<Record<string, SqliteValue>>;
+    `).all(...params, limit + 1) as Array<Record<string, SqliteValue>>;
 
     return this.mapEventPage(rows, cursor, limit);
   }
 
-  pollEventsForInstallation(installationId: string, cursor: number, limit: number): EventPage {
+  pollEventsForInstallation(installationId: string, cursor: number, limit: number, filters: EventFilters = {}): EventPage {
+    const clauses = [
+      "s.installation_id = ?",
+      "s.deleted_at IS NULL",
+      "e.visibility = 'visible'",
+      "e.id > ?",
+    ];
+    const params: SqliteValue[] = [installationId, cursor];
+    this.appendEventFilters(clauses, params, filters);
     const rows = this.sqlite.prepare(`
       SELECT
         e.id, e.subscription_id, e.created_at,
         i.provider, i.external_id, i.canonical_url, i.title, i.summary,
         i.published_at, i.first_seen_at,
         e.review_status, e.relevance_score, e.credibility_score,
-        e.review_reason, e.review_signals_json, e.review_model
+        e.review_reason, e.review_signals_json, e.review_model,
+        e.bookmarked
       FROM subscription_events e
       JOIN subscriptions s ON s.id = e.subscription_id
       JOIN items i ON i.id = e.item_id
-      WHERE s.installation_id = ?
-        AND s.deleted_at IS NULL
-        AND e.visibility = 'visible'
-        AND e.id > ?
+      WHERE ${clauses.join(" AND ")}
       ORDER BY e.id ASC LIMIT ?
-    `).all(installationId, cursor, limit + 1) as Array<Record<string, SqliteValue>>;
+    `).all(...params, limit + 1) as Array<Record<string, SqliteValue>>;
     return this.mapEventPage(rows, cursor, limit);
+  }
+
+  pollBookmarkedEventsForInstallation(installationId: string, cursor: number, limit: number, filters: Omit<EventFilters, "bookmarked"> = {}): EventPage {
+    const clauses = [
+      "s.installation_id = ?",
+      "s.deleted_at IS NULL",
+      "e.visibility = 'visible'",
+      "e.bookmarked = 1",
+      "e.id > ?",
+    ];
+    const params: SqliteValue[] = [installationId, cursor];
+    this.appendEventFilters(clauses, params, filters);
+    const rows = this.sqlite.prepare(`
+      SELECT
+        e.id, e.subscription_id, e.created_at,
+        i.provider, i.external_id, i.canonical_url, i.title, i.summary,
+        i.published_at, i.first_seen_at,
+        e.review_status, e.relevance_score, e.credibility_score,
+        e.review_reason, e.review_signals_json, e.review_model,
+        e.bookmarked
+      FROM subscription_events e
+      JOIN subscriptions s ON s.id = e.subscription_id
+      JOIN items i ON i.id = e.item_id
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY e.id ASC LIMIT ?
+    `).all(...params, limit + 1) as Array<Record<string, SqliteValue>>;
+    return this.mapEventPage(rows, cursor, limit);
+  }
+
+  private appendEventFilters(clauses: string[], params: SqliteValue[], filters: EventFilters): void {
+    if (filters.subscriptionId) {
+      clauses.push("e.subscription_id = ?");
+      params.push(filters.subscriptionId);
+    }
+    if (filters.provider) {
+      clauses.push("i.provider = ?");
+      params.push(filters.provider);
+    }
+    if (filters.query) {
+      const pattern = `%${filters.query.replace(/[\\%_]/g, "\\$&")}%`;
+      clauses.push("(i.title LIKE ? ESCAPE '\\' OR i.summary LIKE ? ESCAPE '\\' OR i.canonical_url LIKE ? ESCAPE '\\')");
+      params.push(pattern, pattern, pattern);
+    }
+    if (filters.from) {
+      clauses.push("COALESCE(i.published_at, e.created_at) >= ?");
+      params.push(filters.from);
+    }
+    if (filters.to) {
+      clauses.push("COALESCE(i.published_at, e.created_at) <= ?");
+      params.push(filters.to);
+    }
+    if (filters.bookmarked !== undefined) {
+      clauses.push("e.bookmarked = ?");
+      params.push(filters.bookmarked ? 1 : 0);
+    }
+  }
+
+  setEventBookmark(installationId: string, eventId: number, bookmarked: boolean, now: string): boolean {
+    const result = this.sqlite.prepare(`
+      UPDATE subscription_events
+      SET bookmarked = ?, bookmarked_at = CASE WHEN ? = 1 THEN ? ELSE NULL END
+      WHERE id = ?
+        AND visibility = 'visible'
+        AND EXISTS (
+          SELECT 1 FROM subscriptions s
+          WHERE s.id = subscription_events.subscription_id
+            AND s.installation_id = ?
+            AND s.deleted_at IS NULL
+        )
+    `).run(bookmarked ? 1 : 0, bookmarked ? 1 : 0, now, eventId, installationId);
+    return result.changes === 1;
   }
 
   private mapEventPage(rows: Array<Record<string, SqliteValue>>, cursor: number, limit: number): EventPage {
@@ -777,6 +874,7 @@ export class AppDatabase {
         firstSeenAt: String(row.first_seen_at),
       },
       createdAt: String(row.created_at),
+      bookmarked: Number(row.bookmarked ?? 0) === 1,
       review: row.review_status === "accepted" ? {
         accepted: true,
         relevanceScore: Number(row.relevance_score),

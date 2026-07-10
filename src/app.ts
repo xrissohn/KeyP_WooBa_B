@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { z } from "zod";
-import type { AppDatabase } from "./db.js";
+import type { AppDatabase, EventFilters } from "./db.js";
 import type { PlannerResult } from "./planner.js";
 import type { CollectedItem } from "./types.js";
 import { canonicalizeUrl, stableId } from "./util.js";
@@ -17,9 +17,16 @@ const deviceBody = z.object({
   platform: z.enum(["ios", "android", "web"]),
 });
 const subscriptionStatusBody = z.object({ active: z.boolean() });
+const bookmarkBody = z.object({ bookmarked: z.boolean() });
 const eventQuery = z.object({
   cursor: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(50),
+  subscriptionId: z.string().uuid().optional(),
+  provider: z.string().trim().min(1).max(120).optional(),
+  q: z.string().trim().min(1).max(300).optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  bookmarked: z.enum(["true", "false"]).optional().transform((value) => value === undefined ? undefined : value === "true"),
 });
 const webhookItem = z.object({
   id: z.union([z.string(), z.number()]).optional(),
@@ -31,7 +38,13 @@ const webhookItem = z.object({
 });
 const webhookBody = z.object({ items: z.array(webhookItem).min(1).max(100) });
 
-function installationId(request: FastifyRequest): string {
+interface IdentityOptions {
+  installationIdRequired: boolean;
+  anonymousInstallationId: string;
+}
+
+function installationId(request: FastifyRequest, identity: IdentityOptions): string {
+  if (!identity.installationIdRequired) return identity.anonymousInstallationId;
   const value = request.headers["x-firebase-installation-id"];
   const parsed = fidSchema.safeParse(value);
   if (!parsed.success) {
@@ -40,10 +53,14 @@ function installationId(request: FastifyRequest): string {
   return parsed.data;
 }
 
-function registeredInstallationId(request: FastifyRequest, db: AppDatabase): string {
-  const fid = installationId(request);
+function registeredInstallationId(request: FastifyRequest, db: AppDatabase, identity: IdentityOptions): string {
+  const fid = installationId(request, identity);
   const now = new Date().toISOString();
   if (!db.touchInstallation(fid, now)) {
+    if (!identity.installationIdRequired) {
+      db.registerInstallation({ fid, now });
+      return fid;
+    }
     throw Object.assign(new Error("Firebase installation is not registered"), { statusCode: 401 });
   }
   return fid;
@@ -56,16 +73,32 @@ function safeEqual(actual: string | undefined, expected: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+function eventFilters(query: z.infer<typeof eventQuery>): EventFilters {
+  return {
+    subscriptionId: query.subscriptionId,
+    provider: query.provider,
+    query: query.q,
+    from: query.from,
+    to: query.to,
+    bookmarked: query.bookmarked,
+  };
+}
+
 export function buildApp(dependencies: {
   db: AppDatabase;
   planner: { create(keyword: string): Promise<PlannerResult> };
   worker: { tick(): Promise<void> };
   appCheck?: { verify(token: string | undefined): Promise<void> };
+  identity?: IdentityOptions;
   push: {
     send(installationId: string, subscriptionId: string, events: Array<{ eventId: number; item: CollectedItem }>): Promise<void>;
   };
 }, options: { logger?: boolean } = {}): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? true, bodyLimit: 1_000_000 });
+  const identity = dependencies.identity ?? {
+    installationIdRequired: true,
+    anonymousInstallationId: "test-anonymous-installation",
+  };
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof z.ZodError) {
@@ -92,7 +125,7 @@ export function buildApp(dependencies: {
   app.get("/health", async () => ({ ok: true, now: new Date().toISOString() }));
 
   app.put("/v1/installations/current", async (request, reply) => {
-    const fid = installationId(request);
+    const fid = installationId(request, identity);
     const body = installationBody.parse(request.body);
     const now = new Date().toISOString();
     const installation = dependencies.db.registerInstallation({ fid, platform: body.platform, now });
@@ -101,18 +134,18 @@ export function buildApp(dependencies: {
   });
 
   app.get("/v1/installations/current", async (request) => {
-    const fid = registeredInstallationId(request, dependencies.db);
+    const fid = registeredInstallationId(request, dependencies.db, identity);
     return dependencies.db.getInstallation(fid);
   });
 
   app.delete("/v1/installations/current", async (request, reply) => {
-    const fid = registeredInstallationId(request, dependencies.db);
+    const fid = registeredInstallationId(request, dependencies.db, identity);
     dependencies.db.deactivateInstallation(fid, new Date().toISOString());
     return reply.status(204).send();
   });
 
   app.post("/v1/subscriptions", async (request, reply) => {
-    const owner = registeredInstallationId(request, dependencies.db);
+    const owner = registeredInstallationId(request, dependencies.db, identity);
     const body = subscriptionBody.parse(request.body);
     const plannerResult = await dependencies.planner.create(body.keyword);
     const id = randomUUID();
@@ -142,12 +175,12 @@ export function buildApp(dependencies: {
   });
 
   app.get("/v1/subscriptions", async (request) => {
-    const owner = registeredInstallationId(request, dependencies.db);
+    const owner = registeredInstallationId(request, dependencies.db, identity);
     return { subscriptions: dependencies.db.listSubscriptions(owner) };
   });
 
   app.get("/v1/subscriptions/:id", async (request, reply) => {
-    const owner = registeredInstallationId(request, dependencies.db);
+    const owner = registeredInstallationId(request, dependencies.db, identity);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const subscription = dependencies.db.getSubscription(id);
     if (!subscription || subscription.installationId !== owner) return reply.status(404).send({ error: "not_found" });
@@ -155,7 +188,7 @@ export function buildApp(dependencies: {
   });
 
   app.delete("/v1/subscriptions/:id", async (request, reply) => {
-    const owner = registeredInstallationId(request, dependencies.db);
+    const owner = registeredInstallationId(request, dependencies.db, identity);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     if (!dependencies.db.softDeleteSubscription(id, owner, new Date().toISOString())) {
       return reply.status(404).send({ error: "not_found" });
@@ -164,7 +197,7 @@ export function buildApp(dependencies: {
   });
 
   app.patch("/v1/subscriptions/:id/status", async (request, reply) => {
-    const owner = registeredInstallationId(request, dependencies.db);
+    const owner = registeredInstallationId(request, dependencies.db, identity);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const { active } = subscriptionStatusBody.parse(request.body);
     if (!dependencies.db.setSubscriptionActive(id, owner, active, new Date().toISOString())) {
@@ -175,29 +208,47 @@ export function buildApp(dependencies: {
   });
 
   app.get("/v1/subscriptions/:id/events", async (request, reply) => {
-    const owner = registeredInstallationId(request, dependencies.db);
+    const owner = registeredInstallationId(request, dependencies.db, identity);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const query = eventQuery.parse(request.query);
     const subscription = dependencies.db.getSubscription(id);
     if (!subscription || subscription.installationId !== owner) return reply.status(404).send({ error: "not_found" });
-    return dependencies.db.pollEvents(id, query.cursor, query.limit);
+    return dependencies.db.pollEvents(id, query.cursor, query.limit, eventFilters(query));
   });
 
   app.get("/v1/events", async (request) => {
-    const owner = registeredInstallationId(request, dependencies.db);
+    const owner = registeredInstallationId(request, dependencies.db, identity);
     const query = eventQuery.parse(request.query);
-    return dependencies.db.pollEventsForInstallation(owner, query.cursor, query.limit);
+    return dependencies.db.pollEventsForInstallation(owner, query.cursor, query.limit, eventFilters(query));
+  });
+
+  app.get("/v1/bookmarks", async (request) => {
+    const owner = registeredInstallationId(request, dependencies.db, identity);
+    const query = eventQuery.parse(request.query);
+    const filters = eventFilters(query);
+    filters.bookmarked = undefined;
+    return dependencies.db.pollBookmarkedEventsForInstallation(owner, query.cursor, query.limit, filters);
+  });
+
+  app.patch("/v1/events/:cursor/bookmark", async (request, reply) => {
+    const owner = registeredInstallationId(request, dependencies.db, identity);
+    const { cursor } = z.object({ cursor: z.coerce.number().int().min(1) }).parse(request.params);
+    const { bookmarked } = bookmarkBody.parse(request.body);
+    if (!dependencies.db.setEventBookmark(owner, cursor, bookmarked, new Date().toISOString())) {
+      return reply.status(404).send({ error: "not_found" });
+    }
+    return reply.status(204).send();
   });
 
   app.post("/v1/devices", async (request, reply) => {
-    const owner = registeredInstallationId(request, dependencies.db);
+    const owner = registeredInstallationId(request, dependencies.db, identity);
     const body = deviceBody.parse(request.body);
     dependencies.db.registerDevice(owner, body.token, body.platform, new Date().toISOString());
     return reply.status(204).send();
   });
 
   app.delete("/v1/devices", async (request, reply) => {
-    const owner = registeredInstallationId(request, dependencies.db);
+    const owner = registeredInstallationId(request, dependencies.db, identity);
     const { token } = deviceBody.pick({ token: true }).parse(request.body);
     if (!dependencies.db.deactivateDeviceForInstallation(token, owner)) {
       return reply.status(404).send({ error: "not_found" });
