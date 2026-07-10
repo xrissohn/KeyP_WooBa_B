@@ -1,4 +1,47 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
+
+val localProperties = Properties().apply {
+    val localPropertiesFile = rootProject.file("local.properties")
+    if (localPropertiesFile.isFile) {
+        localPropertiesFile.inputStream().use(::load)
+    }
+}
+
+val baseUrl = (
+    providers.gradleProperty("BASE_URL").orNull
+        ?: localProperties.getProperty("BASE_URL")
+        ?: "http://10.0.2.2:3000"
+).trim().trimEnd('/') + "/"
+
+val generatedApiConfigDir = layout.buildDirectory.dir("generated/apiConfig/commonMain/kotlin")
+val generatedApiConfigFile = generatedApiConfigDir.map {
+    it.file("com/jetbrains/kmpapp/data/GeneratedApiConfig.kt")
+}
+val generateApiConfig by tasks.registering {
+    inputs.property("baseUrl", baseUrl)
+    outputs.file(generatedApiConfigFile)
+
+    doLast {
+        val outputFile = outputs.files.singleFile
+        val configuredBaseUrl = inputs.properties["baseUrl"] as String
+        val kotlinStringBaseUrl = configuredBaseUrl
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("$", "\\$")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+        outputFile.parentFile.mkdirs()
+        outputFile.writeText(
+            """
+            package com.jetbrains.kmpapp.data
+
+            /** Generated from BASE_URL in local.properties (or the Gradle property). */
+            internal const val GENERATED_BASE_URL = "$kotlinStringBaseUrl"
+            """.trimIndent() + "\n"
+        )
+    }
+}
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -33,10 +76,16 @@ kotlin {
     }
 
     sourceSets {
+        commonMain {
+            kotlin.srcDir(generatedApiConfigDir)
+        }
+
         androidMain.dependencies {
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.activity.compose)
             implementation(libs.ktor.client.okhttp)
+            implementation(project.dependencies.platform("com.google.firebase:firebase-bom:34.15.0"))
+            implementation(libs.firebase.messaging)
         }
         iosMain.dependencies {
             implementation(libs.ktor.client.darwin)
@@ -63,6 +112,12 @@ kotlin {
             implementation(libs.koin.core)
             implementation(libs.koin.compose.viewmodel)
         }
+    }
+}
+
+tasks.configureEach {
+    if (name.startsWith("compile") && name.contains("Kotlin")) {
+        dependsOn(generateApiConfig)
     }
 }
 

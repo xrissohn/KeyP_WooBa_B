@@ -12,7 +12,9 @@ dependencies {
     implementation(libs.compose.uiToolingPreview)
     implementation(libs.compose.foundation)
     implementation(libs.ktor.client.okhttp)
+    implementation(libs.koin.core)
     implementation(platform("com.google.firebase:firebase-bom:34.15.0"))
+    implementation(libs.firebase.messaging)
 }
 
 android {

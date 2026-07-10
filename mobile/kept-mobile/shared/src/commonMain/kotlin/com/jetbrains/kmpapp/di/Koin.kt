@@ -4,11 +4,13 @@ import com.jetbrains.kmpapp.data.ApiConfig
 import com.jetbrains.kmpapp.data.CursorStore
 import com.jetbrains.kmpapp.data.DeviceRepository
 import com.jetbrains.kmpapp.data.FeedRepository
+import com.jetbrains.kmpapp.data.GENERATED_BASE_URL
 import com.jetbrains.kmpapp.data.KeypApi
 import com.jetbrains.kmpapp.data.KtorKeypApi
 import com.jetbrains.kmpapp.data.SubscriptionRepository
+import com.jetbrains.kmpapp.data.PushTokenProvider
 import com.jetbrains.kmpapp.data.createCursorStore
-import com.jetbrains.kmpapp.data.defaultApiHost
+import com.jetbrains.kmpapp.data.createPushTokenProvider
 import com.jetbrains.kmpapp.screens.feed.FeedViewModel
 import com.jetbrains.kmpapp.screens.home.HomeViewModel
 import com.jetbrains.kmpapp.screens.mypage.MyPageViewModel
@@ -17,7 +19,6 @@ import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
-import io.ktor.http.URLProtocol
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import org.koin.core.context.startKoin
@@ -30,7 +31,7 @@ val dataModule = module {
         HttpClient {
             expectSuccess = true
             defaultRequest {
-                url { protocol = URLProtocol.HTTP; host = defaultApiHost(); port = ApiConfig.PORT }
+                url(GENERATED_BASE_URL)
                 headers.append("x-user-id", ApiConfig.DEV_USER_ID)
             }
             install(ContentNegotiation) {
@@ -44,6 +45,7 @@ val dataModule = module {
 
     single<KeypApi> { KtorKeypApi(get()) }
     single<CursorStore> { createCursorStore() }
+    single<PushTokenProvider> { createPushTokenProvider() }
     single { SubscriptionRepository(get()) }
     single { FeedRepository(get(), get()) }
     single { DeviceRepository(get()) }
