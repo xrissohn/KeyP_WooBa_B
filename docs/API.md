@@ -36,7 +36,7 @@
 | `DELETE` | `/v1/devices` | FID + App Check | FCM token 해제 |
 | `POST` | `/v1/webhooks/{subscriptionId}/{source}` | Webhook | 외부 이벤트 수신 |
 
-검색 계획의 provider는 `naver`, `x`, `rss`, `ai_search`, `serpapi`, `youtube`, `webhook`을 지원합니다. 검색형 source의 신규 후보는 원래 자연어 의도에 대한 관련도와 출처 신뢰도 AI 검증을 모두 통과해야 polling과 FCM에 노출됩니다.
+검색 계획의 provider는 `naver`, `x`, `rss`, `ai_search`, `serpapi`, `youtube`, `webhook`을 지원합니다. 신규 후보는 원래 자연어 의도에 대한 관련도와 출처 신뢰도 AI 검증을 모두 통과해야 polling과 FCM에 노출됩니다. webhook 입력도 동일한 검증을 거칩니다.
 
 `active=false`인 구독은 목록과 기존 feed에는 남지만 외부 수집, webhook 입력, 신규 feed 생성 및 FCM 전송을 하지 않습니다. 구독 삭제 시 `active=0`과 `deleted_at`을 기록하며 목록·상세·통합 feed에서 제외합니다. 관련 DB row와 기존 이벤트/아이템은 삭제하지 않습니다.
 

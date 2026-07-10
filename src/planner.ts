@@ -4,6 +4,8 @@ import { searchPlanSchema, type SearchPlan, type SourcePlan } from "./types.js";
 
 interface ChatResponse {
   choices?: Array<{ message?: { content?: string } }>;
+  output_text?: string;
+  output?: Array<{ content?: Array<{ text?: string }> }>;
 }
 
 const PLAN_JSON_SCHEMA = {
@@ -50,6 +52,55 @@ const PLAN_JSON_SCHEMA = {
   },
 } as const;
 
+function isResponsesApi(url: string): boolean {
+  return /\/responses\/?$/.test(url);
+}
+
+function extractText(response: ChatResponse): string | undefined {
+  return response.output_text
+    ?? response.output?.flatMap((item) => item.content ?? []).find((content) => content.text)?.text
+    ?? response.choices?.[0]?.message?.content;
+}
+
+function structuredRequestBody(input: {
+  model: string;
+  schemaName: string;
+  schema: typeof PLAN_JSON_SCHEMA;
+  system: string;
+  user: string;
+  responsesApi: boolean;
+}): Record<string, unknown> {
+  if (input.responsesApi) {
+    return {
+      model: input.model,
+      input: [
+        { role: "system", content: input.system },
+        { role: "user", content: input.user },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: input.schemaName,
+          strict: true,
+          schema: input.schema,
+        },
+      },
+    };
+  }
+  return {
+    model: input.model,
+    temperature: 0,
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: input.schemaName, strict: true, schema: input.schema },
+    },
+    messages: [
+      { role: "system", content: input.system },
+      { role: "user", content: input.user },
+    ],
+  };
+}
+
 export interface PlannerResult {
   plan: SearchPlan;
   mode: "ai" | "fallback";
@@ -65,38 +116,32 @@ export class SearchPlanner {
     try {
       const enabledRss = config.defaultRssFeeds.join(", ") || "none";
       const enabledProviders = this.enabledProviders().join(", ") || "webhook only";
+      const system = [
+        "Convert a Korean user's monitoring interest into a conservative search plan.",
+        "Use only the providers in the schema.",
+        `Enabled providers: ${enabledProviders}. Do not select disabled providers.`,
+        "Use X for timely public discussion, reactions, and first-hand posts.",
+        "Use ai_search for current web-grounded AI research and source discovery.",
+        "Use serpapi for broad web discovery and youtube only when video content is relevant.",
+        "Use RSS only with one of the explicitly allowed URLs.",
+        "Decompose the intent into 2-6 distinct, narrow queries while preserving every mandatory constraint.",
+        "Do not broaden a query by dropping required people, locations, technologies, dates, or event types.",
+        "Prefer short literal queries; do not invent facts or URLs. Avoid duplicate provider/query pairs.",
+        `Allowed RSS URLs: ${enabledRss}`,
+      ].join(" ");
       const response = await fetchJson<ChatResponse>(config.ai.url, {
         method: "POST",
         headers: { authorization: `Bearer ${config.ai.key}`, "content-type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(structuredRequestBody({
           model: config.ai.model,
-          temperature: 0,
-          response_format: {
-            type: "json_schema",
-            json_schema: { name: "search_plan", strict: true, schema: PLAN_JSON_SCHEMA },
-          },
-          messages: [
-            {
-              role: "system",
-              content: [
-                "Convert a Korean user's monitoring interest into a conservative search plan.",
-                "Use only the providers in the schema.",
-                `Enabled providers: ${enabledProviders}. Do not select disabled providers.`,
-                "Use X for timely public discussion, reactions, and first-hand posts.",
-                "Use ai_search for current web-grounded AI research and source discovery.",
-                "Use serpapi for broad web discovery and youtube only when video content is relevant.",
-                "Use RSS only with one of the explicitly allowed URLs.",
-                "Decompose the intent into 2-6 distinct, narrow queries while preserving every mandatory constraint.",
-                "Do not broaden a query by dropping required people, locations, technologies, dates, or event types.",
-                "Prefer short literal queries; do not invent facts or URLs. Avoid duplicate provider/query pairs.",
-                `Allowed RSS URLs: ${enabledRss}`,
-              ].join(" "),
-            },
-            { role: "user", content: keyword },
-          ],
-        }),
+          schemaName: "search_plan",
+          schema: PLAN_JSON_SCHEMA,
+          system,
+          user: keyword,
+          responsesApi: isResponsesApi(config.ai.url),
+        })),
       });
-      const content = response.choices?.[0]?.message?.content;
+      const content = extractText(response);
       if (!content) throw new Error("AI response did not contain a plan");
       const plan = this.withEnabledSources(searchPlanSchema.parse(JSON.parse(content)));
       const allowedFeeds = new Set(config.defaultRssFeeds);

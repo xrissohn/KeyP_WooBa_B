@@ -69,15 +69,15 @@ export const config = {
     },
   },
   ai: {
-    url: process.env.AI_API_URL ?? "https://api.openai.com/v1/chat/completions",
+    url: process.env.AI_API_URL ?? "https://api.openai.com/v1/responses",
     key: process.env.AI_API_KEY,
-    model: process.env.AI_MODEL ?? "gpt-4.1-mini",
+    model: process.env.AI_MODEL ?? "gpt-5.6",
   },
   aiReview: {
     enabled: bool("AI_REVIEW_ENABLED", Boolean(process.env.AI_API_KEY)),
     required: bool("AI_REVIEW_REQUIRED", process.env.NODE_ENV === "production"),
-    relevanceThreshold: Math.min(100, Math.max(0, int("AI_RELEVANCE_THRESHOLD", 70))),
-    credibilityThreshold: Math.min(100, Math.max(0, int("AI_CREDIBILITY_THRESHOLD", 55))),
+    relevanceThreshold: Math.min(100, Math.max(0, int("AI_RELEVANCE_THRESHOLD", 55))),
+    credibilityThreshold: Math.min(100, Math.max(0, int("AI_CREDIBILITY_THRESHOLD", 40))),
     batchSize: Math.min(20, Math.max(1, int("AI_REVIEW_BATCH_SIZE", 15))),
   },
   aiSearch: {

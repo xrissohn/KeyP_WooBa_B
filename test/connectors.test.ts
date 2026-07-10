@@ -63,9 +63,15 @@ test("X connector applies overlap, expands usernames, and builds canonical post 
             text: "Username expansion 없는 게시물",
             author_id: "missing-author",
           },
+          {
+            id: "1111111111111111111",
+            text: "RT @newsbot: 비트코인 급등, 이더리움도 동반 상승 https://t.co/example #비트코인 @someone",
+            author_id: "author-1",
+            created_at: "2026-07-10T00:50:00.000Z",
+          },
         ],
         includes: { users: [{ id: "author-1", username: "DouglasKim83979" }] },
-        meta: { newest_id: "1234567890123456789", result_count: 2 },
+        meta: { newest_id: "1234567890123456789", result_count: 3 },
       });
     };
 
@@ -93,6 +99,8 @@ test("X connector applies overlap, expands usernames, and builds canonical post 
     assert.equal(results[0]?.title, "홍명보 축구대표팀 최신 소식");
     assert.equal(results[0]?.publishedAt, "2026-07-10T00:45:00.000Z");
     assert.equal(results[1]?.url, "https://x.com/i/web/status/9876543210987654321");
+    assert.equal(results[2]?.title, "비트코인 급등, 이더리움도 동반 상승");
+    assert.equal(results[2]?.summary, "비트코인 급등, 이더리움도 동반 상승");
   } finally {
     globalThis.fetch = originalFetch;
   }

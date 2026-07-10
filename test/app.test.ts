@@ -3,6 +3,7 @@ import test from "node:test";
 import { AppDatabase } from "../src/db.js";
 import { buildApp } from "../src/app.js";
 import type { SearchPlan } from "../src/types.js";
+import type { ItemReviewer } from "../src/review.js";
 
 const FID_ONE = "cFidInstallationOne_123";
 const FID_TWO = "cFidInstallationTwo_456";
@@ -16,6 +17,19 @@ async function registerInstallation(app: ReturnType<typeof buildApp>, fid: strin
   });
 }
 
+const acceptingReviewer: ItemReviewer = {
+  async review(_subscription, items) {
+    return items.map(() => ({
+      accepted: true,
+      relevanceScore: 100,
+      credibilityScore: 100,
+      reason: "accepted by test reviewer",
+      signals: ["test"],
+      model: "test-reviewer",
+    }));
+  },
+};
+
 test("webhook events are authenticated, deduplicated, and available through cursor polling", async () => {
   const db = new AppDatabase(":memory:");
   const plan: SearchPlan = {
@@ -28,6 +42,7 @@ test("webhook events are authenticated, deduplicated, and available through curs
     db,
     planner: { async create() { return { plan, mode: "fallback" }; } },
     worker: { async tick() {} },
+    reviewer: acceptingReviewer,
     push: {
       async send(_userId, _subscriptionId, events) {
         db.markPushSent(events.map((event) => event.eventId), new Date().toISOString());
@@ -239,6 +254,7 @@ test("webhook item identities are isolated between subscriptions", async () => {
     db,
     planner: { async create() { return { plan, mode: "fallback" }; } },
     worker: { async tick() {} },
+    reviewer: acceptingReviewer,
     push: { async send() {} },
   }, { logger: false });
 
@@ -283,6 +299,74 @@ test("webhook item identities are isolated between subscriptions", async () => {
   db.close();
 });
 
+test("webhook candidates are AI reviewed before visibility and push", async () => {
+  const db = new AppDatabase(":memory:");
+  const plan: SearchPlan = {
+    topic: "general",
+    normalizedKeywords: ["release"],
+    intervalSeconds: 60,
+    sources: [{ provider: "webhook", name: "default" }],
+  };
+  const pushed: number[] = [];
+  const app = buildApp({
+    db,
+    planner: { async create() { return { plan, mode: "fallback" }; } },
+    worker: { async tick() {} },
+    reviewer: {
+      async review(_subscription, items) {
+        return items.map((item) => ({
+          accepted: item.title.includes("Official"),
+          relevanceScore: item.title.includes("Official") ? 90 : 25,
+          credibilityScore: item.title.includes("Official") ? 85 : 20,
+          reason: item.title.includes("Official") ? "official item" : "noise",
+          signals: ["test"],
+          model: "test-reviewer",
+        }));
+      },
+    },
+    push: {
+      async send(_installationId, _subscriptionId, events) {
+        pushed.push(...events.map((event) => event.eventId));
+      },
+    },
+  }, { logger: false });
+
+  assert.equal((await registerInstallation(app, FID_ONE)).statusCode, 200);
+  const created = await app.inject({
+    method: "POST",
+    url: "/v1/subscriptions",
+    headers: { "x-firebase-installation-id": FID_ONE },
+    payload: { keyword: "official release" },
+  });
+  const subscription = created.json() as { id: string; webhook: { url: string; secret: string } };
+
+  const response = await app.inject({
+    method: "POST",
+    url: subscription.webhook.url,
+    headers: { "x-webhook-secret": subscription.webhook.secret },
+    payload: {
+      items: [
+        { id: "official", url: "https://example.com/official", title: "Official release" },
+        { id: "noise", url: "https://example.com/noise", title: "Random noise" },
+      ],
+    },
+  });
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.json().created, 1);
+  assert.equal(pushed.length, 1);
+  assert.deepEqual(db.pollEvents(subscription.id, 0, 50).events.map((event) => event.item.externalId), ["official"]);
+  const rejected = db.sqlite.prepare(`
+    SELECT visibility, review_status FROM subscription_events e
+    JOIN items i ON i.id = e.item_id
+    WHERE e.subscription_id = ? AND i.external_id = 'noise'
+  `).get(subscription.id) as { visibility: string; review_status: string };
+  assert.equal(rejected.visibility, "suppressed");
+  assert.equal(rejected.review_status, "rejected");
+
+  await app.close();
+  db.close();
+});
+
 test("API rejects unauthenticated, invalid, and cross-user requests", async () => {
   const db = new AppDatabase(":memory:");
   const plan: SearchPlan = {
@@ -295,6 +379,7 @@ test("API rejects unauthenticated, invalid, and cross-user requests", async () =
     db,
     planner: { async create() { return { plan, mode: "fallback" }; } },
     worker: { async tick() {} },
+    reviewer: acceptingReviewer,
     push: { async send() {} },
   }, { logger: false });
 
@@ -364,6 +449,7 @@ test("installation registration links FCM delivery and deactivation removes acce
     db,
     planner: { async create() { return { plan, mode: "fallback" }; } },
     worker: { async tick() {} },
+    reviewer: acceptingReviewer,
     push: { async send() {} },
   }, { logger: false });
   const token = "installation-fcm-token-at-least-twenty";
@@ -410,6 +496,7 @@ test("App Check is required when its verifier enforces it", async () => {
     db,
     planner: { async create() { throw new Error("not used"); } },
     worker: { async tick() {} },
+    reviewer: acceptingReviewer,
     appCheck: {
       async verify(token) {
         if (token !== "valid-app-check-token") {
@@ -451,6 +538,7 @@ test("temporary anonymous mode accepts requests without FID or App Check", async
       installationIdRequired: false,
       anonymousInstallationId: "temporary-test-installation",
     },
+    reviewer: acceptingReviewer,
     push: { async send() {} },
   }, { logger: false });
 

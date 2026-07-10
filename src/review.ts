@@ -5,6 +5,8 @@ import type { CollectedItem, ItemReview, StoredSubscription } from "./types.js";
 
 interface ChatResponse {
   choices?: Array<{ message?: { content?: string } }>;
+  output_text?: string;
+  output?: Array<{ content?: Array<{ text?: string }> }>;
 }
 
 const decisionSchema = z.object({
@@ -42,6 +44,55 @@ const REVIEW_JSON_SCHEMA = {
   },
 } as const;
 
+function isResponsesApi(url: string): boolean {
+  return /\/responses\/?$/.test(url);
+}
+
+function extractText(response: ChatResponse): string | undefined {
+  return response.output_text
+    ?? response.output?.flatMap((item) => item.content ?? []).find((content) => content.text)?.text
+    ?? response.choices?.[0]?.message?.content;
+}
+
+function structuredRequestBody(input: {
+  model: string;
+  schemaName: string;
+  schema: typeof REVIEW_JSON_SCHEMA;
+  system: string;
+  user: string;
+  responsesApi: boolean;
+}): Record<string, unknown> {
+  if (input.responsesApi) {
+    return {
+      model: input.model,
+      input: [
+        { role: "system", content: input.system },
+        { role: "user", content: input.user },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: input.schemaName,
+          strict: true,
+          schema: input.schema,
+        },
+      },
+    };
+  }
+  return {
+    model: input.model,
+    temperature: 0,
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: input.schemaName, strict: true, schema: input.schema },
+    },
+    messages: [
+      { role: "system", content: input.system },
+      { role: "user", content: input.user },
+    ],
+  };
+}
+
 export interface ItemReviewer {
   review(subscription: StoredSubscription, items: CollectedItem[]): Promise<ItemReview[]>;
 }
@@ -75,50 +126,42 @@ export class AiItemReviewer implements ItemReviewer {
   }
 
   private async reviewBatch(subscription: StoredSubscription, items: CollectedItem[]): Promise<ItemReview[]> {
+    const system = [
+      "Evaluate monitoring candidates against the user's original intent.",
+      "Mandatory people, organizations, locations, technologies, dates, and event types must all match.",
+      "Relevance score measures intent match, not keyword overlap.",
+      "Credibility score estimates source reliability from the provider, URL domain, title, snippet, recency, and whether it appears primary or official.",
+      "Do not claim that a fact is verified when the supplied evidence is insufficient.",
+      "Official and primary sources are strongest; established reporting is stronger than unattributed aggregation.",
+      "Anonymous social claims, rumors, clickbait, and content without a checkable source should score low.",
+      "Return exactly one decision for every itemIndex and no additional items.",
+    ].join(" ");
+    const user = JSON.stringify({
+      originalIntent: subscription.keyword,
+      topic: subscription.plan.topic,
+      normalizedKeywords: subscription.plan.normalizedKeywords,
+      items: items.map((item, itemIndex) => ({
+        itemIndex,
+        provider: item.provider,
+        url: item.url,
+        title: item.title,
+        summary: item.summary,
+        publishedAt: item.publishedAt,
+      })),
+    });
     const response = await fetchJson<ChatResponse>(this.options.api.url, {
       method: "POST",
       headers: { authorization: `Bearer ${this.options.api.key}`, "content-type": "application/json" },
-      body: JSON.stringify({
+      body: JSON.stringify(structuredRequestBody({
         model: this.options.api.model,
-        temperature: 0,
-        response_format: {
-          type: "json_schema",
-          json_schema: { name: "interest_item_review", strict: true, schema: REVIEW_JSON_SCHEMA },
-        },
-        messages: [
-          {
-            role: "system",
-            content: [
-              "Evaluate monitoring candidates against the user's original intent.",
-              "Mandatory people, organizations, locations, technologies, dates, and event types must all match.",
-              "Relevance score measures intent match, not keyword overlap.",
-              "Credibility score estimates source reliability from the provider, URL domain, title, snippet, recency, and whether it appears primary or official.",
-              "Do not claim that a fact is verified when the supplied evidence is insufficient.",
-              "Official and primary sources are strongest; established reporting is stronger than unattributed aggregation.",
-              "Anonymous social claims, rumors, clickbait, and content without a checkable source should score low.",
-              "Return exactly one decision for every itemIndex and no additional items.",
-            ].join(" "),
-          },
-          {
-            role: "user",
-            content: JSON.stringify({
-              originalIntent: subscription.keyword,
-              topic: subscription.plan.topic,
-              normalizedKeywords: subscription.plan.normalizedKeywords,
-              items: items.map((item, itemIndex) => ({
-                itemIndex,
-                provider: item.provider,
-                url: item.url,
-                title: item.title,
-                summary: item.summary,
-                publishedAt: item.publishedAt,
-              })),
-            }),
-          },
-        ],
-      }),
+        schemaName: "interest_item_review",
+        schema: REVIEW_JSON_SCHEMA,
+        system,
+        user,
+        responsesApi: isResponsesApi(this.options.api.url),
+      })),
     });
-    const content = response.choices?.[0]?.message?.content;
+    const content = extractText(response);
     if (!content) throw new Error("AI review response did not contain decisions");
     const parsed = decisionSchema.parse(JSON.parse(content));
     const byIndex = new Map(parsed.decisions.map((decision) => [decision.itemIndex, decision]));

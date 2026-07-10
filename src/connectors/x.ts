@@ -20,6 +20,24 @@ interface XSearchResponse {
   meta?: { newest_id?: string; oldest_id?: string; result_count?: number; next_token?: string };
 }
 
+function cleanXText(text: string): string {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/^RT\s+@\w+:\s*/i, "")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/(^|\s)@\w+/g, " ")
+    .replace(/(^|\s)#[\p{L}\p{N}_]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function xTitle(text: string): string {
+  const cleaned = cleanXText(text);
+  if (!cleaned) return "X 게시물";
+  const firstSentence = cleaned.match(/^.{12,120}?[.!?。！？](?=\s|$)/u)?.[0];
+  return (firstSentence ?? cleaned).slice(0, 120).trim();
+}
+
 function xTimestamp(value: Date): string {
   return value.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
@@ -64,6 +82,7 @@ export class XConnector implements Connector {
         ? `https://x.com/${encodeURIComponent(username)}/status/${post.id}`
         : `https://x.com/i/web/status/${post.id}`;
       const normalizedText = post.text.replace(/\s+/g, " ").trim();
+      const summary = cleanXText(post.text);
       const publishedAt = post.created_at && !Number.isNaN(Date.parse(post.created_at))
         ? new Date(post.created_at).toISOString()
         : undefined;
@@ -71,8 +90,8 @@ export class XConnector implements Connector {
         provider: "x",
         externalId: post.id,
         url: postUrl,
-        title: normalizedText.slice(0, 160),
-        summary: normalizedText,
+        title: xTitle(post.text),
+        summary: summary || normalizedText,
         publishedAt,
         raw: post,
       }];

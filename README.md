@@ -165,7 +165,7 @@ curl -X POST http://127.0.0.1:3000/v1/webhooks/SUBSCRIPTION_ID/default \
 
 ## 신규 판정
 
-각 polling 소스의 첫 성공 실행은 baseline으로 저장하고 알림하지 않습니다. 이후 처음 관측된 후보만 OpenAI structured output 검증에 전달합니다. 원래 자연어 의도와의 관련도, 출처·도메인·게시 형태에 기반한 신뢰도 점수가 서버 임계값을 모두 통과한 항목만 visible 이벤트와 FCM 알림이 됩니다. 명시된 `publishedAt`이 구독 생성 시각보다 과거이면 AI 호출 없이 억제합니다.
+각 polling 소스의 첫 성공 실행은 baseline으로 저장하고 알림하지 않습니다. 이후 처음 관측된 후보와 webhook 신규 입력은 OpenAI structured output 검증에 전달합니다. 원래 자연어 의도와의 관련도, 출처·도메인·게시 형태에 기반한 신뢰도 점수가 서버 임계값을 모두 통과한 항목만 visible 이벤트와 FCM 알림이 됩니다. 명시된 `publishedAt`이 구독 생성 시각보다 과거이면 AI 호출 없이 억제합니다.
 
 ```text
 provider + external_id             전역 항목 중복 방지

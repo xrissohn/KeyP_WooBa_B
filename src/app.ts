@@ -5,6 +5,7 @@ import type { AppDatabase, EventFilters } from "./db.js";
 import type { PlannerResult } from "./planner.js";
 import type { CollectedItem } from "./types.js";
 import { canonicalizeUrl, stableId } from "./util.js";
+import { AiItemReviewer, type ItemReviewer } from "./review.js";
 
 const subscriptionBody = z.object({ keyword: z.string().trim().min(2).max(500) });
 const fidSchema = z.string().trim().min(10).max(200).regex(/^[A-Za-z0-9_-]+$/);
@@ -90,6 +91,7 @@ export function buildApp(dependencies: {
   worker: { tick(): Promise<void> };
   appCheck?: { verify(token: string | undefined): Promise<void> };
   identity?: IdentityOptions;
+  reviewer?: ItemReviewer;
   push: {
     send(installationId: string, subscriptionId: string, events: Array<{ eventId: number; item: CollectedItem }>): Promise<void>;
   };
@@ -99,6 +101,7 @@ export function buildApp(dependencies: {
     installationIdRequired: true,
     anonymousInstallationId: "test-anonymous-installation",
   };
+  const reviewer = dependencies.reviewer ?? new AiItemReviewer();
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof z.ZodError) {
@@ -266,23 +269,34 @@ export function buildApp(dependencies: {
     const subscription = dependencies.db.getSubscription(params.subscriptionId);
     if (!subscription) return reply.status(404).send({ error: "not_found" });
     const now = new Date().toISOString();
+    const items = body.items.map((incoming) => ({
+      provider: `webhook:${stableId(subscription.id, params.source).slice(0, 24)}`,
+      externalId: String(incoming.id ?? stableId(canonicalizeUrl(incoming.url))),
+      url: incoming.url,
+      title: incoming.title,
+      summary: incoming.summary,
+      publishedAt: incoming.publishedAt,
+      raw: incoming.data,
+    }));
+    const newItems = items.filter((item) => !dependencies.db.hasSubscriptionItem(
+      subscription.id,
+      item.provider,
+      item.externalId,
+    ));
+    const candidates = newItems.filter((item) => !item.publishedAt || item.publishedAt >= subscription.createdAt);
+    const reviews = candidates.length > 0 ? await reviewer.review(subscription, candidates) : [];
+    const reviewByItem = new Map(candidates.map((item, index) => [item, reviews[index]]));
     const newEvents = [];
-    for (const incoming of body.items) {
-      const item = {
-        provider: `webhook:${stableId(subscription.id, params.source).slice(0, 24)}`,
-        externalId: String(incoming.id ?? stableId(canonicalizeUrl(incoming.url))),
-        url: incoming.url,
-        title: incoming.title,
-        summary: incoming.summary,
-        publishedAt: incoming.publishedAt,
-        raw: incoming.data,
-      };
-      const visible = !item.publishedAt || item.publishedAt >= subscription.createdAt;
+    for (const item of newItems) {
+      const publishedAfterRegistration = !item.publishedAt || item.publishedAt >= subscription.createdAt;
+      const review = reviewByItem.get(item);
+      const visible = publishedAfterRegistration && review?.accepted === true;
       const stored = dependencies.db.storeItemAndEvent({
         subscriptionId: subscription.id,
         item,
         canonicalUrl: canonicalizeUrl(item.url),
         visible,
+        review,
         now,
       });
       if (stored.inserted && visible && stored.eventId) newEvents.push({ eventId: stored.eventId, item });

@@ -4,7 +4,9 @@ import { config } from "../src/config.js";
 import { SearchPlanner } from "../src/planner.js";
 
 interface ConfigSnapshot {
+  aiUrl: string;
   aiKey?: string;
+  aiModel: string;
   naverClientId?: string;
   naverClientSecret?: string;
   xBearerToken?: string;
@@ -18,7 +20,9 @@ interface ConfigSnapshot {
 
 function snapshotConfig(): ConfigSnapshot {
   return {
+    aiUrl: config.ai.url,
     aiKey: config.ai.key,
+    aiModel: config.ai.model,
     naverClientId: config.naver.clientId,
     naverClientSecret: config.naver.clientSecret,
     xBearerToken: config.x.bearerToken,
@@ -32,7 +36,9 @@ function snapshotConfig(): ConfigSnapshot {
 }
 
 function restoreConfig(snapshot: ConfigSnapshot): void {
+  config.ai.url = snapshot.aiUrl;
   config.ai.key = snapshot.aiKey;
+  config.ai.model = snapshot.aiModel;
   config.naver.clientId = snapshot.naverClientId;
   config.naver.clientSecret = snapshot.naverClientSecret;
   config.x.bearerToken = snapshot.xBearerToken;
@@ -106,6 +112,58 @@ test("AI plans retain only configured providers", async () => {
       { provider: "naver", vertical: "news", query: "TypeScript" },
     ]);
     assert.equal(requestBody?.model, config.ai.model);
+    const responseFormat = requestBody?.text as {
+      format?: {
+        type?: string;
+        schema?: { properties?: { sources?: { items?: Record<string, unknown> } } };
+      };
+    };
+    assert.equal(responseFormat.format?.type, "json_schema");
+    const sourceVariants = responseFormat.format?.schema?.properties?.sources?.items;
+    const sourceArray = responseFormat.format?.schema?.properties?.sources as { minItems?: number } | undefined;
+    assert.equal(sourceArray?.minItems, 2);
+    assert.ok(Array.isArray(sourceVariants?.anyOf));
+    assert.equal(sourceVariants?.oneOf, undefined);
+    for (const variant of sourceVariants.anyOf as Array<{ properties?: { provider?: { type?: string } } }>) {
+      assert.equal(variant.properties?.provider?.type, "string");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreConfig(snapshot);
+  }
+});
+
+test("planner can still call legacy Chat Completions endpoints", async () => {
+  const snapshot = snapshotConfig();
+  const originalFetch = globalThis.fetch;
+  try {
+    disableProviders();
+    config.ai.key = "ai-key";
+    config.ai.url = "https://openai.example/v1/chat/completions";
+    config.naver.clientId = "naver-client";
+    config.naver.clientSecret = "naver-secret";
+    let requestBody: Record<string, unknown> | undefined;
+    globalThis.fetch = async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              topic: "technology",
+              normalizedKeywords: ["TypeScript"],
+              intervalSeconds: 3600,
+              sources: [{ provider: "naver", vertical: "news", query: "TypeScript" }],
+            }),
+          },
+        }],
+      });
+    };
+
+    const result = await new SearchPlanner().create("TypeScript release");
+    assert.equal(result.mode, "ai");
+    assert.deepEqual(result.plan.sources, [
+      { provider: "naver", vertical: "news", query: "TypeScript" },
+    ]);
     const responseFormat = requestBody?.response_format as {
       type?: string;
       json_schema?: { schema?: { properties?: { sources?: { items?: Record<string, unknown> } } } };
