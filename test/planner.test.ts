@@ -76,7 +76,7 @@ test("AI plans retain only configured providers", async () => {
             content: JSON.stringify({
               topic: "technology",
               normalizedKeywords: ["TypeScript"],
-              intervalSeconds: 60,
+              intervalSeconds: 3600,
               sources: [
                 { provider: "naver", vertical: "news", query: "TypeScript" },
                 { provider: "google", query: "TypeScript" },
@@ -89,9 +89,20 @@ test("AI plans retain only configured providers", async () => {
 
     const result = await new SearchPlanner().create("TypeScript release");
     assert.equal(result.mode, "ai");
+    assert.equal(result.plan.intervalSeconds, config.pollIntervalSeconds);
     assert.deepEqual(result.plan.sources, [{ provider: "naver", vertical: "news", query: "TypeScript" }]);
     assert.equal(requestBody?.model, config.ai.model);
-    assert.equal((requestBody?.response_format as { type?: string }).type, "json_schema");
+    const responseFormat = requestBody?.response_format as {
+      type?: string;
+      json_schema?: { schema?: { properties?: { sources?: { items?: Record<string, unknown> } } } };
+    };
+    assert.equal(responseFormat.type, "json_schema");
+    const sourceVariants = responseFormat.json_schema?.schema?.properties?.sources?.items;
+    assert.ok(Array.isArray(sourceVariants?.anyOf));
+    assert.equal(sourceVariants?.oneOf, undefined);
+    for (const variant of sourceVariants.anyOf as Array<{ properties?: { provider?: { type?: string } } }>) {
+      assert.equal(variant.properties?.provider?.type, "string");
+    }
   } finally {
     globalThis.fetch = originalFetch;
     restoreConfig(snapshot);

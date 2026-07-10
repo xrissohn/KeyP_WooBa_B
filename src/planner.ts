@@ -19,22 +19,22 @@ const PLAN_JSON_SCHEMA = {
       minItems: 1,
       maxItems: 12,
       items: {
-        oneOf: [
+        anyOf: [
           {
             type: "object", additionalProperties: false, required: ["provider", "query", "vertical"],
-            properties: { provider: { const: "naver" }, query: { type: "string" }, vertical: { enum: ["news", "blog", "webkr"] } },
+            properties: { provider: { type: "string", const: "naver" }, query: { type: "string" }, vertical: { type: "string", enum: ["news", "blog", "webkr"] } },
           },
           {
             type: "object", additionalProperties: false, required: ["provider", "query"],
-            properties: { provider: { const: "google" }, query: { type: "string" } },
+            properties: { provider: { type: "string", const: "google" }, query: { type: "string" } },
           },
           {
             type: "object", additionalProperties: false, required: ["provider", "query"],
-            properties: { provider: { const: "saramin" }, query: { type: "string" } },
+            properties: { provider: { type: "string", const: "saramin" }, query: { type: "string" } },
           },
           {
             type: "object", additionalProperties: false, required: ["provider", "url", "query"],
-            properties: { provider: { const: "rss" }, url: { type: "string" }, query: { type: "string" } },
+            properties: { provider: { type: "string", const: "rss" }, url: { type: "string" }, query: { type: "string" } },
           },
         ],
       },
@@ -136,6 +136,6 @@ export class SearchPlanner {
     const enabled = new Set(this.enabledProviders());
     const sources = plan.sources.filter((source) => enabled.has(source.provider));
     if (sources.length === 0) throw new Error("AI plan did not contain an enabled provider");
-    return searchPlanSchema.parse({ ...plan, sources });
+    return searchPlanSchema.parse({ ...plan, intervalSeconds: config.pollIntervalSeconds, sources });
   }
 }
