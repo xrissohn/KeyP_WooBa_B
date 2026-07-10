@@ -1,0 +1,30 @@
+{
+  "name": "interest-radar-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --import tsx --watch src/index.ts",
+    "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-include='src/**/*.ts' --test-coverage-exclude='src/index.ts' --test-coverage-lines=85 --test-coverage-branches=70 --test-coverage-functions=75 test/**/*.test.ts",
+    "ci": "pnpm typecheck && pnpm build && pnpm test:coverage",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.2.5",
+    "fastify": "^5.4.0",
+    "firebase-admin": "^13.4.0",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.32",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "yaml": "^2.9.0"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}
