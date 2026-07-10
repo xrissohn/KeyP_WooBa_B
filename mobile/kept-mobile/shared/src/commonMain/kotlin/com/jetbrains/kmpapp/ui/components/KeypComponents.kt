@@ -34,10 +34,10 @@ import com.jetbrains.kmpapp.ui.theme.KeypColors
 @Composable fun KeypTopBar(back: (() -> Unit)? = null, onSettings: (() -> Unit)? = null) = Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) { if (back != null) IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "뒤로가기") }; Text("KeyP", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = KeypColors.Primary); Spacer(Modifier.weight(1f)); onSettings?.let { IconButton(onClick = it) { Icon(Icons.Default.Settings, "설정") } } }
 
 @Composable fun KeypBottomBar(selected: String, onSelect: (String) -> Unit) = Row(Modifier.fillMaxWidth().background(Color.White).navigationBarsPadding().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-    listOf("feed" to "피드", "home" to "Home", "mypage" to "마이페이지").forEach { (key, label) ->
+    listOf("feed" to "피드", "home" to "홈 화면", "mypage" to "마이페이지").forEach { (key, label) ->
         val icon = when (key) { "feed" -> Icons.AutoMirrored.Filled.Article; "home" -> Icons.Default.Home; else -> Icons.Default.Person }
         Column(
-            modifier = Modifier.clickable { onSelect(key) }.padding(horizontal = 16.dp, vertical = 4.dp),
+            modifier = Modifier.weight(1f).clickable { onSelect(key) }.padding(horizontal = 16.dp, vertical = 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Icon(icon, label, tint = if (selected == key) KeypColors.Primary else KeypColors.InkSoft)
