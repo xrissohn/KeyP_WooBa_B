@@ -3,6 +3,7 @@ package com.jetbrains.kmpapp.screens.feed
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jetbrains.kmpapp.data.FeedRepository
+import com.jetbrains.kmpapp.data.BookmarkRepository
 import com.jetbrains.kmpapp.data.KeypApiException
 import com.jetbrains.kmpapp.model.FeedItem
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,20 +16,26 @@ sealed interface FeedUiState {
     data class Error(val message: String) : FeedUiState
 }
 
-class FeedViewModel(private val repository: FeedRepository) : ViewModel() {
+class FeedViewModel(private val repository: FeedRepository, private val bookmarks: BookmarkRepository) : ViewModel() {
     private val _uiState = MutableStateFlow<FeedUiState>(FeedUiState.Loading)
     val uiState = _uiState.asStateFlow()
 
     init {
-        viewModelScope.launch { repository.items.collect { _uiState.value = FeedUiState.Content(it) } }
+        viewModelScope.launch { repository.items.collect { if (_uiState.value !is FeedUiState.Loading) _uiState.value = FeedUiState.Content(it) } }
         refresh()
     }
 
     fun refresh() = viewModelScope.launch {
-        runCatching { repository.refresh() }.onFailure { _uiState.value = FeedUiState.Error(it.toUserMessage()) }
+        runCatching { repository.refresh() }
+            .onSuccess { _uiState.value = FeedUiState.Content(repository.items.value) }
+            .onFailure { _uiState.value = FeedUiState.Error(it.toUserMessage()) }
     }
 
-    fun onBookmark(id: String) = repository.toggleBookmark(id)
+    fun onBookmark(id: String) = viewModelScope.launch {
+        runCatching { repository.toggleBookmark(id) }
+            .onSuccess { it?.let(bookmarks::sync) }
+            .onFailure { _uiState.value = FeedUiState.Error(it.toUserMessage()) }
+    }
 }
 
 private fun Throwable.toUserMessage(): String = when (this) {

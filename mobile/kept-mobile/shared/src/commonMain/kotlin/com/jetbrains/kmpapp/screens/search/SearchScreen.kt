@@ -8,6 +8,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jetbrains.kmpapp.ui.components.KeypTopBar
 import com.jetbrains.kmpapp.ui.components.PrimaryButton
+import com.jetbrains.kmpapp.ui.components.KeypLoading
 import com.jetbrains.kmpapp.ui.theme.KeypColors
 import org.koin.compose.viewmodel.koinViewModel
 
@@ -18,6 +19,7 @@ fun SearchScreen(onBack: () -> Unit, onDone: () -> Unit) {
 
     when (val current = state) {
         is SearchUiState.Success -> SearchSuccessContent(current, onBack, onDone)
+        SearchUiState.Submitting -> Column(Modifier.fillMaxSize()) { KeypTopBar(onBack); KeypLoading() }
         else -> SearchEditingContent(state, vm, onBack)
     }
 }

@@ -2,6 +2,7 @@ package com.jetbrains.kmpapp.di
 
 import com.jetbrains.kmpapp.data.ApiConfig
 import com.jetbrains.kmpapp.data.DeviceRepository
+import com.jetbrains.kmpapp.data.BookmarkRepository
 import com.jetbrains.kmpapp.data.FeedRepository
 import com.jetbrains.kmpapp.data.GENERATED_BASE_URL
 import com.jetbrains.kmpapp.data.KeypApi
@@ -11,7 +12,8 @@ import com.jetbrains.kmpapp.data.PushTokenProvider
 import com.jetbrains.kmpapp.data.createPushTokenProvider
 import com.jetbrains.kmpapp.screens.feed.FeedViewModel
 import com.jetbrains.kmpapp.screens.home.HomeViewModel
-import com.jetbrains.kmpapp.screens.mypage.MyPageViewModel
+import com.jetbrains.kmpapp.screens.bookmarks.BookmarksViewModel
+import com.jetbrains.kmpapp.screens.keyword.KeywordFeedViewModel
 import com.jetbrains.kmpapp.screens.search.SearchViewModel
 import com.jetbrains.kmpapp.screens.settings.SettingsViewModel
 import io.ktor.client.HttpClient
@@ -60,6 +62,7 @@ val dataModule = module {
     single<KeypApi> { KtorKeypApi(get(), get()) }
     single { SubscriptionRepository(get(), get()) }
     single { FeedRepository(get()) }
+    single { BookmarkRepository(get()) }
     single { DeviceRepository(get()) }
 }
 
@@ -67,7 +70,8 @@ val viewModelModule = module {
     viewModelOf(::FeedViewModel)
     viewModelOf(::HomeViewModel)
     viewModelOf(::SearchViewModel)
-    viewModelOf(::MyPageViewModel)
+    viewModelOf(::BookmarksViewModel)
+    viewModelOf(::KeywordFeedViewModel)
     viewModelOf(::SettingsViewModel)
 }
 

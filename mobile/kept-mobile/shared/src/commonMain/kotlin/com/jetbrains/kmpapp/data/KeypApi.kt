@@ -20,6 +20,9 @@ interface KeypApi {
     suspend fun updateSubscriptionStatus(id: String, active: Boolean)
     suspend fun deleteSubscription(id: String)
     suspend fun listEvents(cursor: Long?, limit: Int = 50): EventsPageDto
+    suspend fun listBookmarks(cursor: Long?, limit: Int = 50): EventsPageDto
+    suspend fun updateBookmark(cursor: Long, bookmarked: Boolean)
+    suspend fun listSubscriptionEvents(id: String, cursor: Long?, limit: Int = 50): EventsPageDto
     suspend fun registerDevice(token: String, platform: String)
     suspend fun deleteDevice(token: String)
 }
@@ -82,6 +85,32 @@ class KtorKeypApi(
 
     override suspend fun listEvents(cursor: Long?, limit: Int) = mapErrors {
         client.get("v1/events") {
+            headers.append("x-firebase-installation-id", installationId())
+            url.parameters.append("cursor", (cursor ?: 0L).toString())
+            url.parameters.append("limit", limit.toString())
+        }.body<EventsPageDto>()
+    }
+
+    override suspend fun listBookmarks(cursor: Long?, limit: Int) = mapErrors {
+        client.get("v1/bookmarks") {
+            headers.append("x-firebase-installation-id", installationId())
+            url.parameters.append("cursor", (cursor ?: 0L).toString())
+            url.parameters.append("limit", limit.toString())
+        }.body<EventsPageDto>()
+    }
+
+    override suspend fun updateBookmark(cursor: Long, bookmarked: Boolean) {
+        mapErrors {
+            client.patch("v1/events/$cursor/bookmark") {
+                headers.append("x-firebase-installation-id", installationId())
+                contentType(ContentType.Application.Json)
+                setBody(UpdateBookmarkRequest(bookmarked))
+            }
+        }
+    }
+
+    override suspend fun listSubscriptionEvents(id: String, cursor: Long?, limit: Int) = mapErrors {
+        client.get("v1/subscriptions/$id/events") {
             headers.append("x-firebase-installation-id", installationId())
             url.parameters.append("cursor", (cursor ?: 0L).toString())
             url.parameters.append("limit", limit.toString())

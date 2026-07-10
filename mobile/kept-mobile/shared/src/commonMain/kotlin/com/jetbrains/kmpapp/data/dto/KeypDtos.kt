@@ -38,7 +38,8 @@ sealed class SourcePlanDto {
 @Serializable data class WebhookRegistrationDto(val url: String, val secret: String? = null, val secretHeader: String)
 
 @Serializable data class EventsPageDto(val events: List<EventDto>, val nextCursor: Long, val hasMore: Boolean)
-@Serializable data class EventDto(val cursor: Long, val subscriptionId: String, val item: EventItemDto, val createdAt: String)
+@Serializable data class EventDto(val cursor: Long, val subscriptionId: String, val item: EventItemDto, val createdAt: String, val bookmarked: Boolean = false)
+@Serializable data class UpdateBookmarkRequest(val bookmarked: Boolean)
 @Serializable data class EventItemDto(val provider: String, val externalId: String, val url: String, val title: String, val summary: String? = null, val publishedAt: String? = null, val firstSeenAt: String)
 @Serializable data class RegisterDeviceRequest(val token: String, val platform: String)
 @Serializable data class RegisterInstallationRequest(val platform: String, val fcmToken: String? = null)

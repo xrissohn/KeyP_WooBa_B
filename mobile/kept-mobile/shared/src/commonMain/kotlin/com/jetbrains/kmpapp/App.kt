@@ -17,7 +17,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.jetbrains.kmpapp.screens.feed.FeedScreen
 import com.jetbrains.kmpapp.screens.home.HomeScreen
-import com.jetbrains.kmpapp.screens.mypage.MyPageScreen
+import com.jetbrains.kmpapp.screens.bookmarks.BookmarksScreen
+import com.jetbrains.kmpapp.screens.keyword.KeywordFeedScreen
 import com.jetbrains.kmpapp.screens.search.SearchScreen
 import com.jetbrains.kmpapp.screens.settings.NotificationSettingsScreen
 import com.jetbrains.kmpapp.ui.components.KeypBottomBar
@@ -25,9 +26,10 @@ import com.jetbrains.kmpapp.ui.theme.KeypTheme
 
 private const val HOME = "home"
 private const val FEED = "feed"
-private const val MYPAGE = "mypage"
+private const val BOOKMARKS = "bookmarks"
 private const val SEARCH = "search"
 private const val SETTINGS = "settings"
+private const val KEYWORD = "keyword/{subscriptionId}?keyword={keyword}"
 
 @Composable
 fun App() = KeypTheme {
@@ -35,7 +37,7 @@ fun App() = KeypTheme {
     val snackbarHost = remember { SnackbarHostState() }
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: HOME
-    val tabRoute = currentRoute != SEARCH && currentRoute != SETTINGS
+    val tabRoute = currentRoute != SEARCH && currentRoute != SETTINGS && currentRoute != KEYWORD
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0),
@@ -47,11 +49,12 @@ fun App() = KeypTheme {
             startDestination = HOME,
             modifier = Modifier.fillMaxSize().padding(padding).safeDrawingPadding(),
         ) {
-            composable(HOME) { HomeScreen(onAddInterest = { navController.navigate(SEARCH) }, onOpenSettings = { navController.navigate(SETTINGS) }) }
+            composable(HOME) { HomeScreen(onAddInterest = { navController.navigate(SEARCH) }, onOpenSettings = { navController.navigate(SETTINGS) }, onOpenKeywordFeed = { id, keyword -> navController.navigate("keyword/$id?keyword=$keyword") }) }
             composable(FEED) { FeedScreen() }
-            composable(MYPAGE) { MyPageScreen(onManageInterests = { navController.navigate(HOME) { popUpTo(HOME) { inclusive = true } } }) }
+            composable(BOOKMARKS) { BookmarksScreen() }
             composable(SEARCH) { SearchScreen(onBack = { navController.popBackStack() }, onDone = { navController.popBackStack() }) }
             composable(SETTINGS) { NotificationSettingsScreen(onBack = { navController.popBackStack() }) }
+            composable(KEYWORD) { entry -> KeywordFeedScreen(entry.arguments?.getString("subscriptionId").orEmpty(), entry.arguments?.getString("keyword").orEmpty(), onBack = { navController.popBackStack() }) }
         }
     }
 }

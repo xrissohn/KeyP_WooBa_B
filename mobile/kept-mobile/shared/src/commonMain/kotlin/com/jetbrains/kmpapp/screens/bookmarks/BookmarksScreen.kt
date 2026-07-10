@@ -1,4 +1,4 @@
-package com.jetbrains.kmpapp.screens.feed
+package com.jetbrains.kmpapp.screens.bookmarks
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,26 +24,22 @@ import com.jetbrains.kmpapp.ui.components.KeypTopBar
 import org.koin.compose.viewmodel.koinViewModel
 
 @Composable
-fun FeedScreen() {
-    val vm = koinViewModel<FeedViewModel>()
+fun BookmarksScreen() {
+    val vm = koinViewModel<BookmarksViewModel>()
     val state by vm.uiState.collectAsStateWithLifecycle()
-
     Column(Modifier.fillMaxSize()) {
         KeypTopBar()
         androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(20.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("관심사 피드", style = MaterialTheme.typography.headlineLarge)
+            Text("북마크", style = MaterialTheme.typography.headlineLarge)
             TextButton(onClick = vm::refresh) { Text("새로고침") }
         }
         when (val current = state) {
-            FeedUiState.Loading -> KeypLoading()
-            is FeedUiState.Content -> if (current.items.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("새 소식이 없어요") }
-            } else {
-                LazyColumn(contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(current.items, key = { it.id }) { FeedItemCard(it, vm::onBookmark) }
-                }
+            BookmarksUiState.Loading -> KeypLoading()
+            is BookmarksUiState.Content -> if (current.items.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("북마크한 소식이 없어요") }
+            else LazyColumn(contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(current.items, key = { it.id }) { item -> FeedItemCard(item) { vm.remove(item) } }
             }
-            is FeedUiState.Error -> Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            is BookmarksUiState.Error -> Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Text(current.message, color = MaterialTheme.colorScheme.error)
                 TextButton(onClick = vm::refresh) { Text("다시 시도") }
             }
