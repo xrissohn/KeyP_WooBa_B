@@ -11,8 +11,7 @@
 - AI 기반 관심사 분석과 검증된 JSON 검색 계획
 - AI 장애 또는 API 키 미설정 시 deterministic fallback 계획
 - NAVER 뉴스/블로그/웹 검색 커넥터
-- Google Custom Search JSON API 커넥터
-- 사람인 채용 공고 API 커넥터
+- X Recent Search API 커넥터
 - RSS/Atom 커넥터와 private-network SSRF 차단
 - secret 인증을 사용하는 외부 webhook 수신
 - 소스별 최초 baseline 억제 및 게시일 기반 등록 이전 결과 억제
@@ -42,8 +41,7 @@ pnpm dev
 |---|---|
 | `AI_API_KEY` | OpenAI-compatible Chat Completions API 키 |
 | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | NAVER 검색 API |
-| `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_ENGINE_ID` | Google Custom Search |
-| `SARAMIN_ACCESS_KEY` | 사람인 채용 API |
+| `X_BEARER_TOKEN` | X Recent Search API Bearer token |
 | `DEFAULT_RSS_FEEDS` | AI가 선택할 수 있는 RSS URL allowlist |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | FCM 서비스 계정 JSON 문자열 |
 | `FIREBASE_PROJECT_ID` | Application Default Credentials 사용 시 프로젝트 ID |
@@ -53,7 +51,7 @@ pnpm dev
 
 NAVER 검색의 API HUB 이전으로 endpoint가 변경되면 `NAVER_SEARCH_BASE_URL`을 새 endpoint로 설정할 수 있습니다.
 
-Google Custom Search JSON API는 신규 고객이 사용할 수 없고 기존 고객도 2027년 1월 1일까지 이전해야 하므로, 기존 자격 증명이 있는 환경에서만 활성화하십시오. 자격 증명이 없는 공급자는 AI 검색 계획과 fallback 계획에서 자동 제외됩니다.
+자격 증명이 없는 공급자는 AI 검색 계획과 fallback 계획에서 자동 제외됩니다. X 검색은 최근 게시물을 최대 100개씩 조회하고 author expansion으로 실제 게시물 URL을 구성합니다.
 
 ## API 흐름
 
@@ -133,7 +131,16 @@ source_cache.source_key             동일 검색 계획의 공유 수집 결과
 provider_usage(provider, day)       공급자 전체 일일 호출량
 ```
 
-일반 감시는 공급자별 최신 첫 페이지만 수집합니다. 사람인은 `published_min/max`에 10분 overlap을 적용합니다. NAVER와 Google은 진짜 변경 cursor가 없으므로 최신 결과를 반복 수집하고 내부 unique constraint로 중복 제거합니다. 따라서 범용 검색 API만으로 원본 정보의 완전한 수집을 보장할 수는 없습니다.
+일반 감시는 공급자별 최신 첫 페이지만 수집합니다. X는 마지막 성공 시각보다 2분 이전부터 겹쳐 조회하고, NAVER는 최신 결과를 반복 수집합니다. 중복은 내부 unique constraint로 제거하지만 범용 검색 API만으로 원본 정보의 완전한 수집을 보장할 수는 없습니다.
+
+API와 worker는 기본적으로 한 프로세스에서 실행되며 운영 시 분리할 수 있습니다.
+
+```bash
+pnpm start:api
+pnpm start:worker
+```
+
+여러 worker가 같은 SQLite 파일을 공유하더라도 만료 가능한 scheduler lease로 동일 구독의 중복 실행을 방지합니다. 여러 서버에 걸친 운영은 PostgreSQL과 외부 queue로 이전해야 합니다.
 
 ## 검증
 

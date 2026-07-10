@@ -7,11 +7,7 @@ export const sourcePlanSchema = z.discriminatedUnion("provider", [
     vertical: z.enum(["news", "blog", "webkr"]).default("news"),
   }),
   z.object({
-    provider: z.literal("google"),
-    query: z.string().min(1).max(300),
-  }),
-  z.object({
-    provider: z.literal("saramin"),
+    provider: z.literal("x"),
     query: z.string().min(1).max(300),
   }),
   z.object({

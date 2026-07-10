@@ -53,7 +53,9 @@ export class AppDatabase {
         active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         next_run_at TEXT NOT NULL,
-        last_run_at TEXT
+        last_run_at TEXT,
+        lease_owner TEXT,
+        lease_until TEXT
       );
 
       CREATE INDEX IF NOT EXISTS subscriptions_due_idx
@@ -138,6 +140,19 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS push_deliveries_due_idx
         ON push_deliveries(event_id, status, next_attempt_at);
     `);
+    this.ensureColumn("subscriptions", "lease_owner", "TEXT");
+    this.ensureColumn("subscriptions", "lease_until", "TEXT");
+    this.sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS subscriptions_lease_idx
+        ON subscriptions(active, next_run_at, lease_until);
+    `);
+  }
+
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const columns = this.sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!columns.some((item) => item.name === column)) {
+      this.sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
   }
 
   close(): void {
@@ -179,7 +194,10 @@ export class AppDatabase {
   }
 
   deactivateSubscription(id: string, userId: string): boolean {
-    const result = this.sqlite.prepare("UPDATE subscriptions SET active = 0 WHERE id = ? AND user_id = ?")
+    const result = this.sqlite.prepare(`
+      UPDATE subscriptions SET active = 0, lease_owner = NULL, lease_until = NULL
+      WHERE id = ? AND user_id = ?
+    `)
       .run(id, userId);
     return result.changes === 1;
   }
@@ -187,7 +205,10 @@ export class AppDatabase {
   setSubscriptionActive(id: string, userId: string, active: boolean, now: string): boolean {
     const result = this.sqlite.prepare(`
       UPDATE subscriptions
-      SET active = ?, next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END
+      SET active = ?,
+          next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
+          lease_owner = NULL,
+          lease_until = NULL
       WHERE id = ? AND user_id = ?
     `).run(active ? 1 : 0, active ? 1 : 0, now, id, userId);
     return result.changes === 1;
@@ -209,9 +230,40 @@ export class AppDatabase {
     return rows.map((row) => this.mapSubscription(row));
   }
 
+  claimDueSubscriptions(input: {
+    owner: string;
+    now: string;
+    leaseUntil: string;
+    limit?: number;
+  }): StoredSubscription[] {
+    this.sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      const rows = this.sqlite.prepare(`
+        SELECT id, user_id, keyword, plan_json, active, created_at, next_run_at
+        FROM subscriptions
+        WHERE active = 1
+          AND next_run_at <= ?
+          AND (lease_until IS NULL OR lease_until <= ?)
+        ORDER BY next_run_at ASC
+        LIMIT ?
+      `).all(input.now, input.now, input.limit ?? 100) as Array<Record<string, SqliteValue>>;
+      const claim = this.sqlite.prepare(`
+        UPDATE subscriptions SET lease_owner = ?, lease_until = ? WHERE id = ?
+      `);
+      for (const row of rows) claim.run(input.owner, input.leaseUntil, String(row.id));
+      this.sqlite.exec("COMMIT");
+      return rows.map((row) => this.mapSubscription(row));
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   scheduleNext(subscriptionId: string, nextRunAt: string, lastRunAt: string): void {
     this.sqlite.prepare(`
-      UPDATE subscriptions SET next_run_at = ?, last_run_at = ? WHERE id = ?
+      UPDATE subscriptions
+      SET next_run_at = ?, last_run_at = ?, lease_owner = NULL, lease_until = NULL
+      WHERE id = ?
     `).run(nextRunAt, lastRunAt, subscriptionId);
   }
 

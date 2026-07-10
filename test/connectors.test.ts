@@ -1,93 +1,76 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GoogleConnector } from "../src/connectors/google.js";
 import { NaverConnector } from "../src/connectors/naver.js";
-import { SaraminConnector } from "../src/connectors/saramin.js";
 import { RssConnector } from "../src/connectors/rss.js";
+import { XConnector } from "../src/connectors/x.js";
 
-test("search connectors use one request per monitoring run and validate provider responses", async () => {
-  const originalFetch = globalThis.fetch;
-  const requested: URL[] = [];
-  try {
-    globalThis.fetch = async (input) => {
-      const url = new URL(input instanceof Request ? input.url : input.toString());
-      requested.push(url);
-      if (url.hostname === "openapi.naver.com") {
-        return Response.json({
-          items: [{
-            title: "Backend job",
-            link: "https://example.com/naver-job",
-            description: "New opening",
-            postdate: "20260710",
-          }],
-        });
-      }
-      if (url.hostname === "customsearch.googleapis.com") {
-        return Response.json({
-          items: [{ title: "Release", link: "https://example.com/release", snippet: "New release" }],
-        });
-      }
-      if (url.hostname === "oapi.saramin.co.kr") {
-        return Response.json({ code: 4, message: "daily request limit exceeded" });
-      }
-      return new Response("not found", { status: 404 });
-    };
-
-    const naver = await new NaverConnector({
-      clientId: "client",
-      clientSecret: "secret",
-      baseUrl: "https://openapi.naver.com/v1/search",
-    }).collect({ provider: "naver", vertical: "blog", query: "backend" });
-    assert.equal(naver[0]?.publishedAt, "2026-07-09T15:00:00.000Z");
-    assert.equal(naver[0]?.title, "Backend job");
-
-    const google = await new GoogleConnector({ apiKey: "key", engineId: "engine" })
-      .collect({ provider: "google", query: "release" });
-    assert.equal(google[0]?.externalId.length, 64);
-
-    await assert.rejects(
-      new SaraminConnector("key").collect({ provider: "saramin", query: "backend" }, {
-        subscriptionId: "subscription",
-        subscriptionCreatedAt: "2026-07-10T00:00:00.000Z",
-        now: new Date("2026-07-10T00:05:00.000Z"),
-      }),
-      /Saramin API 4/,
-    );
-
-    assert.equal(requested.filter((url) => url.hostname === "openapi.naver.com").length, 1);
-    assert.equal(requested.filter((url) => url.hostname === "customsearch.googleapis.com").length, 1);
-    assert.equal(requested.filter((url) => url.hostname === "oapi.saramin.co.kr").length, 1);
-    const naverRequest = requested.find((url) => url.hostname === "openapi.naver.com");
-    assert.equal(naverRequest?.searchParams.get("display"), "100");
-    assert.equal(naverRequest?.searchParams.get("sort"), "date");
-    const googleRequest = requested.find((url) => url.hostname === "customsearch.googleapis.com");
-    assert.equal(googleRequest?.searchParams.get("dateRestrict"), "d2");
-    assert.equal(googleRequest?.searchParams.get("start"), "1");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("Saramin connector applies overlap timestamps and normalizes jobs", async () => {
+test("NAVER connector normalizes results and uses one request per run", async () => {
   const originalFetch = globalThis.fetch;
   let requestUrl: URL | undefined;
   try {
     globalThis.fetch = async (input) => {
       requestUrl = new URL(input instanceof Request ? input.url : input.toString());
       return Response.json({
-        jobs: {
-          job: {
-            id: 42,
-            url: "https://saramin.example/jobs/42",
-            company: { detail: { name: "Example Corp" } },
-            position: { title: "Backend Engineer", location: { name: "Seoul" } },
-            "posting-timestamp": Date.parse("2026-07-10T00:00:00.000Z") / 1000,
-          },
-        },
+        items: [{
+          title: "<b>Backend</b> job",
+          originallink: "https://example.com/naver-job",
+          link: "https://search.naver.com/result",
+          description: "New <b>opening</b>",
+          postdate: "20260710",
+        }],
       });
     };
-    const results = await new SaraminConnector("access-key").collect(
-      { provider: "saramin", query: "backend" },
+
+    const results = await new NaverConnector({
+      clientId: "client",
+      clientSecret: "secret",
+      baseUrl: "https://openapi.naver.com/v1/search",
+    }).collect({ provider: "naver", vertical: "blog", query: "backend" });
+
+    assert.equal(results[0]?.publishedAt, "2026-07-09T15:00:00.000Z");
+    assert.equal(results[0]?.title, "Backend job");
+    assert.equal(results[0]?.summary, "New opening");
+    assert.equal(results[0]?.url, "https://example.com/naver-job");
+    assert.equal(requestUrl?.searchParams.get("display"), "100");
+    assert.equal(requestUrl?.searchParams.get("sort"), "date");
+    assert.equal(requestUrl?.searchParams.get("start"), "1");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("X connector applies overlap, expands usernames, and builds canonical post URLs", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestUrl: URL | undefined;
+  let authorization: string | null = null;
+  try {
+    globalThis.fetch = async (input, init) => {
+      requestUrl = new URL(input instanceof Request ? input.url : input.toString());
+      authorization = new Headers(init?.headers).get("authorization");
+      return Response.json({
+        data: [
+          {
+            id: "1234567890123456789",
+            text: "홍명보\n축구대표팀 최신 소식",
+            author_id: "author-1",
+            created_at: "2026-07-10T00:45:00.000Z",
+          },
+          {
+            id: "9876543210987654321",
+            text: "Username expansion 없는 게시물",
+            author_id: "missing-author",
+          },
+        ],
+        includes: { users: [{ id: "author-1", username: "DouglasKim83979" }] },
+        meta: { newest_id: "1234567890123456789", result_count: 2 },
+      });
+    };
+
+    const results = await new XConnector({
+      bearerToken: "encoded-token",
+      baseUrl: "https://api.x.com/2/tweets/search/recent",
+    }).collect(
+      { provider: "x", query: "홍명보" },
       {
         subscriptionId: "subscription",
         subscriptionCreatedAt: "2026-07-10T00:00:00.000Z",
@@ -95,11 +78,40 @@ test("Saramin connector applies overlap timestamps and normalizes jobs", async (
         now: new Date("2026-07-10T01:00:00.000Z"),
       },
     );
-    assert.equal(requestUrl?.searchParams.get("published_min"), String(Date.parse("2026-07-10T00:20:00.000Z") / 1000));
-    assert.equal(requestUrl?.searchParams.get("published_max"), String(Date.parse("2026-07-10T01:00:00.000Z") / 1000));
-    assert.equal(results[0]?.externalId, "42");
-    assert.equal(results[0]?.summary, "Example Corp · Seoul");
-    assert.equal(results[0]?.publishedAt, "2026-07-10T00:00:00.000Z");
+
+    assert.equal(authorization, "Bearer encoded-token");
+    assert.equal(requestUrl?.searchParams.get("query"), "홍명보");
+    assert.equal(requestUrl?.searchParams.get("max_results"), "100");
+    assert.equal(requestUrl?.searchParams.get("tweet.fields"), "created_at,text,author_id");
+    assert.equal(requestUrl?.searchParams.get("expansions"), "author_id");
+    assert.equal(requestUrl?.searchParams.get("user.fields"), "username");
+    assert.equal(requestUrl?.searchParams.get("start_time"), "2026-07-10T00:28:00Z");
+    assert.equal(results[0]?.url, "https://x.com/DouglasKim83979/status/1234567890123456789");
+    assert.equal(results[0]?.title, "홍명보 축구대표팀 최신 소식");
+    assert.equal(results[0]?.publishedAt, "2026-07-10T00:45:00.000Z");
+    assert.equal(results[1]?.url, "https://x.com/i/web/status/9876543210987654321");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("X connector surfaces API problem responses", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => Response.json({
+      errors: [{ status: 429, title: "Too Many Requests", detail: "Rate limit exceeded" }],
+    });
+    await assert.rejects(
+      new XConnector({ bearerToken: "token", baseUrl: "https://api.x.com/2/tweets/search/recent" }).collect(
+        { provider: "x", query: "test" },
+        {
+          subscriptionId: "subscription",
+          subscriptionCreatedAt: "2026-07-10T00:00:00.000Z",
+          now: new Date("2026-07-10T01:00:00.000Z"),
+        },
+      ),
+      /X API 429: Rate limit exceeded/,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -156,15 +168,14 @@ test("connectors fail fast when credentials are missing", async () => {
     /NAVER credentials/,
   );
   await assert.rejects(
-    new GoogleConnector({}).collect({ provider: "google", query: "test" }),
-    /Google Search credentials/,
-  );
-  await assert.rejects(
-    new SaraminConnector().collect({ provider: "saramin", query: "test" }, {
-      subscriptionId: "subscription",
-      subscriptionCreatedAt: "2026-07-10T00:00:00.000Z",
-      now: new Date("2026-07-10T01:00:00.000Z"),
-    }),
-    /SARAMIN_ACCESS_KEY/,
+    new XConnector({ baseUrl: "https://api.x.com/2/tweets/search/recent" }).collect(
+      { provider: "x", query: "test" },
+      {
+        subscriptionId: "subscription",
+        subscriptionCreatedAt: "2026-07-10T00:00:00.000Z",
+        now: new Date("2026-07-10T01:00:00.000Z"),
+      },
+    ),
+    /X_BEARER_TOKEN/,
   );
 });

@@ -529,16 +529,14 @@ components:
     SourcePlan:
       oneOf:
         - $ref: "#/components/schemas/NaverSourcePlan"
-        - $ref: "#/components/schemas/GoogleSourcePlan"
-        - $ref: "#/components/schemas/SaraminSourcePlan"
+        - $ref: "#/components/schemas/XSourcePlan"
         - $ref: "#/components/schemas/RssSourcePlan"
         - $ref: "#/components/schemas/WebhookSourcePlan"
       discriminator:
         propertyName: provider
         mapping:
           naver: "#/components/schemas/NaverSourcePlan"
-          google: "#/components/schemas/GoogleSourcePlan"
-          saramin: "#/components/schemas/SaraminSourcePlan"
+          x: "#/components/schemas/XSourcePlan"
           rss: "#/components/schemas/RssSourcePlan"
           webhook: "#/components/schemas/WebhookSourcePlan"
 
@@ -558,27 +556,14 @@ components:
           type: string
           enum: [news, blog, webkr]
 
-    GoogleSourcePlan:
+    XSourcePlan:
       type: object
       additionalProperties: false
       required: [provider, query]
       properties:
         provider:
           type: string
-          const: google
-        query:
-          type: string
-          minLength: 1
-          maxLength: 300
-
-    SaraminSourcePlan:
-      type: object
-      additionalProperties: false
-      required: [provider, query]
-      properties:
-        provider:
-          type: string
-          const: saramin
+          const: x
         query:
           type: string
           minLength: 1
