@@ -25,16 +25,18 @@ FID는 Firebase 앱 설치 단위를 식별하며 인증 계정이 아닙니다.
 | `DELETE` | `/v1/installations/current` | FID + App Check | 설치, 구독, FCM 연결 해제 |
 | `POST` | `/v1/subscriptions` | FID + App Check | 관심사 등록 및 검색 계획 생성 |
 | `GET` | `/v1/subscriptions` | FID + App Check | 내 구독 목록 |
-| `GET` | `/v1/subscriptions/{id}` | FID + App Check | 활성 구독 상세 |
-| `DELETE` | `/v1/subscriptions/{id}` | FID + App Check | 구독 soft delete |
-| `PATCH` | `/v1/subscriptions/{id}/status` | FID + App Check | 구독 일시정지/재개 |
+| `GET` | `/v1/subscriptions/{id}` | FID + App Check | 삭제되지 않은 구독 상세 |
+| `DELETE` | `/v1/subscriptions/{id}` | FID + App Check | 구독과 feed를 사용자 화면에서 숨기는 soft delete |
+| `PATCH` | `/v1/subscriptions/{id}/status` | FID + App Check | 알림 및 수집 일시정지/재개 |
 | `GET` | `/v1/subscriptions/{id}/events` | FID + App Check | 특정 구독 이벤트 polling |
 | `GET` | `/v1/events` | FID + App Check | 전체 구독 이벤트 polling |
 | `POST` | `/v1/devices` | FID + App Check | FCM token 등록 |
 | `DELETE` | `/v1/devices` | FID + App Check | FCM token 해제 |
 | `POST` | `/v1/webhooks/{subscriptionId}/{source}` | Webhook | 외부 이벤트 수신 |
 
-검색 계획의 provider는 현재 `naver`, `x`, `rss`, `webhook`을 지원합니다.
+검색 계획의 provider는 `naver`, `x`, `rss`, `ai_search`, `serpapi`, `youtube`, `webhook`을 지원합니다. 검색형 source의 신규 후보는 원래 자연어 의도에 대한 관련도와 출처 신뢰도 AI 검증을 모두 통과해야 polling과 FCM에 노출됩니다.
+
+`active=false`인 구독은 목록과 기존 feed에는 남지만 외부 수집, webhook 입력, 신규 feed 생성 및 FCM 전송을 하지 않습니다. 구독 삭제 시 `active=0`과 `deleted_at`을 기록하며 목록·상세·통합 feed에서 제외합니다. 관련 DB row와 기존 이벤트/아이템은 삭제하지 않습니다.
 
 ## Polling 예시
 

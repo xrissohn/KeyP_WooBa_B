@@ -78,7 +78,7 @@ test("provider reconciliation removes legacy sources and disables empty plans", 
   assert.deepEqual(db.getSubscription(mixedId)?.plan.sources, [
     { provider: "naver", vertical: "news", query: "release" },
   ]);
-  assert.equal(db.getSubscription(legacyOnlyId), undefined);
+  assert.equal(db.getSubscription(legacyOnlyId)?.active, false);
   assert.equal(db.getSourceCache("legacy-cache"), undefined);
   assert.equal(db.getProviderUsage("google", "2026-07-10"), 0);
   db.close();
@@ -122,6 +122,51 @@ test("push outbox completes only after every device delivery is terminal", () =>
   db.close();
 });
 
+test("paused subscriptions suppress pending push deliveries without losing feed history", () => {
+  const db = new AppDatabase(":memory:");
+  const now = "2026-07-10T00:00:00.000Z";
+  const subscriptionId = randomUUID();
+  db.createSubscription({
+    id: subscriptionId,
+    installationId: "fid-1",
+    keyword: "release",
+    plan: webhookPlan,
+    webhookSecret: "secret",
+    now,
+  });
+  const stored = db.storeItemAndEvent({
+    subscriptionId,
+    item: {
+      provider: "webhook:test",
+      externalId: "release-paused",
+      url: "https://example.com/releases/paused",
+      title: "Paused release",
+    },
+    canonicalUrl: "https://example.com/releases/paused",
+    visible: true,
+    now,
+  });
+  assert.ok(stored.eventId);
+  db.registerDevice("fid-1", "token-1", "ios", now);
+  db.ensurePushDeliveries(stored.eventId, ["token-1"], now);
+
+  assert.equal(db.setSubscriptionActive(subscriptionId, "fid-1", false, "2026-07-10T00:01:00.000Z"), true);
+  assert.equal(db.getPendingPushEvents(subscriptionId).length, 0);
+  assert.equal(db.pollEvents(subscriptionId, 0, 10).events.length, 1);
+
+  db.markPushDelivery({
+    eventId: stored.eventId,
+    token: "token-1",
+    status: "sent",
+    now: "2026-07-10T00:02:00.000Z",
+  });
+  const delivery = db.sqlite.prepare(`
+    SELECT status FROM push_deliveries WHERE event_id = ? AND token = ?
+  `).get(stored.eventId, "token-1") as { status: string };
+  assert.equal(delivery.status, "invalid");
+  db.close();
+});
+
 test("event polling uses a stable cursor and excludes suppressed or other-user events", () => {
   const db = new AppDatabase(":memory:");
   const now = "2026-07-10T00:00:00.000Z";
@@ -146,6 +191,9 @@ test("event polling uses a stable cursor and excludes suppressed or other-user e
   store(firstSubscription, "suppressed", false);
   store(firstSubscription, "visible-2", true);
   store(secondSubscription, "other-user", true);
+
+  const latestFirst = db.pollEventsForInstallation("fid-1", 0, 2);
+  assert.deepEqual(latestFirst.events.map((event) => event.item.externalId), ["visible-2", "visible-1"]);
 
   const firstPage = db.pollEventsForInstallation("fid-1", 0, 1);
   assert.equal(firstPage.events[0]?.item.externalId, "visible-1");

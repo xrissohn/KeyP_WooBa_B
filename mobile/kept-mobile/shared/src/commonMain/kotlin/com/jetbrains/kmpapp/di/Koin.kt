@@ -46,8 +46,8 @@ val dataModule = module {
     single<KeypApi> { KtorKeypApi(get()) }
     single<CursorStore> { createCursorStore() }
     single<PushTokenProvider> { createPushTokenProvider() }
-    single { SubscriptionRepository(get()) }
     single { FeedRepository(get(), get()) }
+    single { SubscriptionRepository(get(), get()) }
     single { DeviceRepository(get()) }
 }
 

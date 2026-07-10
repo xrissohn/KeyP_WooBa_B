@@ -157,7 +157,9 @@ export function buildApp(dependencies: {
   app.delete("/v1/subscriptions/:id", async (request, reply) => {
     const owner = registeredInstallationId(request, dependencies.db);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    if (!dependencies.db.deactivateSubscription(id, owner)) return reply.status(404).send({ error: "not_found" });
+    if (!dependencies.db.softDeleteSubscription(id, owner, new Date().toISOString())) {
+      return reply.status(404).send({ error: "not_found" });
+    }
     return reply.status(204).send();
   });
 

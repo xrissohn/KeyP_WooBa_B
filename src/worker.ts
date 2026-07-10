@@ -4,6 +4,7 @@ import type { ConnectorRegistry } from "./connectors/index.js";
 import type { CollectedItem, SourceContext, SourcePlan, StoredSubscription } from "./types.js";
 import { config } from "./config.js";
 import { canonicalizeUrl, sourceFingerprint } from "./util.js";
+import { AiItemReviewer, type ItemReviewer } from "./review.js";
 
 export class PollWorker {
   private timer?: NodeJS.Timeout;
@@ -21,6 +22,7 @@ export class PollWorker {
     private readonly tickSeconds: number,
     private readonly concurrency = 5,
     private readonly clock: () => Date = () => new Date(),
+    private readonly reviewer: ItemReviewer = new AiItemReviewer(),
   ) {}
 
   start(): void {
@@ -62,7 +64,9 @@ export class PollWorker {
     this.running.add(subscription.id);
     const startedAt = this.clock();
     try {
+      if (!this.db.isSubscriptionRunnable(subscription.id)) return;
       for (const source of subscription.plan.sources) {
+        if (!this.db.isSubscriptionRunnable(subscription.id)) return;
         if (source.provider === "webhook") continue;
         const key = sourceFingerprint(source);
         const state = this.db.getSourceState(subscription.id, key);
@@ -74,14 +78,27 @@ export class PollWorker {
             lastSuccessfulAt: state.lastSuccessfulAt,
             now: startedAt,
           });
-          for (const item of items) {
+          if (!this.db.isSubscriptionRunnable(subscription.id)) return;
+          const newItems = items.filter((item) => !this.db.hasSubscriptionItem(
+            subscription.id,
+            item.provider,
+            item.externalId,
+          ));
+          const candidates = isBaseline ? [] : newItems.filter((item) => (
+            !item.publishedAt || item.publishedAt >= subscription.createdAt
+          ));
+          const reviews = candidates.length > 0 ? await this.reviewer.review(subscription, candidates) : [];
+          const reviewByItem = new Map(candidates.map((item, index) => [item, reviews[index]]));
+          for (const item of newItems) {
             const publishedAfterRegistration = !item.publishedAt || item.publishedAt >= subscription.createdAt;
-            const visible = !isBaseline && publishedAfterRegistration;
-            const result = this.db.storeItemAndEvent({
+            const review = reviewByItem.get(item);
+            const visible = !isBaseline && publishedAfterRegistration && review?.accepted === true;
+            this.db.storeItemAndEvent({
               subscriptionId: subscription.id,
               item,
               canonicalUrl: canonicalizeUrl(item.url),
               visible,
+              review,
               now: startedAt.toISOString(),
             });
           }
@@ -94,6 +111,7 @@ export class PollWorker {
           );
         }
       }
+      if (!this.db.isSubscriptionRunnable(subscription.id)) return;
       const pendingPush = this.db.getPendingPushEvents(subscription.id);
       await this.push.send(subscription.installationId, subscription.id, pendingPush);
     } finally {

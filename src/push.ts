@@ -14,11 +14,12 @@ export class PushService {
   constructor(private readonly db: AppDatabase) {}
 
   async send(installationId: string, subscriptionId: string, events: Array<{ eventId: number; item: CollectedItem }>): Promise<void> {
-    if (!this.app || events.length === 0) return;
+    if (!this.app || events.length === 0 || !this.db.isSubscriptionRunnable(subscriptionId)) return;
     const tokens = this.db.getDeviceTokens(installationId);
     if (tokens.length === 0) return;
 
     for (const event of events) {
+      if (!this.db.isSubscriptionRunnable(subscriptionId)) return;
       const initializedAt = new Date().toISOString();
       this.db.ensurePushDeliveries(event.eventId, tokens, initializedAt);
       while (true) {
