@@ -54,8 +54,9 @@ pnpm dev
 | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | NAVER 검색 API |
 | `X_BEARER_TOKEN` | X Recent Search API Bearer token |
 | `DEFAULT_RSS_FEEDS` | AI가 선택할 수 있는 RSS URL allowlist |
-| `FIREBASE_SERVICE_ACCOUNT_JSON` | FCM 서비스 계정 JSON 문자열 |
-| `FIREBASE_PROJECT_ID` | Application Default Credentials 사용 시 프로젝트 ID |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | FCM 발송용 Firebase Admin 서비스 계정 JSON 문자열 |
+| `FIREBASE_SERVICE_ACCOUNT_PATH` | FCM 발송용 Firebase Admin 서비스 계정 JSON 파일 경로 |
+| `FIREBASE_PROJECT_ID` | Application Default Credentials 또는 명시적 project override |
 | `FIREBASE_APP_CHECK_ENFORCED` | App Check token 필수 검증 여부, 현재 기본 `false` |
 | `FIREBASE_INSTALLATION_IDENTITY_ENABLED` | FID 기반 데이터 격리 사용 여부, 현재 기본 `false` |
 | `ANONYMOUS_INSTALLATION_ID` | FID 비활성화 중 모든 요청에 사용하는 임시 ID |
@@ -148,6 +149,8 @@ curl -X POST http://127.0.0.1:3000/v1/devices \
 ```
 
 FCM token이 회전하면 같은 endpoint로 새 token을 등록합니다. 앱 설치 데이터 삭제 시 `/v1/installations/current`를 `DELETE`하면 해당 FID의 구독과 token이 모두 비활성화됩니다.
+
+백엔드에서 FCM을 발송하려면 Firebase Admin SDK용 서비스 계정 키가 필요합니다. Firebase Console의 Project settings > Service accounts에서 새 private key를 발급하고, `FIREBASE_SERVICE_ACCOUNT_JSON` 또는 `FIREBASE_SERVICE_ACCOUNT_PATH`로 전달합니다. Android 앱용 `google-services.json`에는 `private_key`가 없어서 서버 발송에 사용할 수 없습니다.
 
 ### 5. Webhook 이벤트 입력
 
