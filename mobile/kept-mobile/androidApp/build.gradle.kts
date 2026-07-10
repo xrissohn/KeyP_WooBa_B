@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.composeCompiler)
+    id("com.google.gms.google-services")
 }
 
 dependencies {
@@ -11,6 +12,7 @@ dependencies {
     implementation(libs.compose.uiToolingPreview)
     implementation(libs.compose.foundation)
     implementation(libs.ktor.client.okhttp)
+    implementation(platform("com.google.firebase:firebase-bom:34.15.0"))
 }
 
 android {
@@ -18,7 +20,7 @@ android {
     compileSdk = libs.versions.android.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "com.jetbrains.kmpapp"
+        applicationId = "com.on.keyp"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
