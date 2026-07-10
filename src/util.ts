@@ -48,6 +48,9 @@ export function sourceFingerprint(source: SourcePlan): string {
     case "naver": return stableId(source.provider, source.vertical, query ?? "");
     case "x": return stableId(source.provider, query ?? "");
     case "rss": return stableId(source.provider, new URL(source.url).toString(), query ?? "");
+    case "ai_search": return stableId(source.provider, query ?? "");
+    case "serpapi": return stableId(source.provider, query ?? "");
+    case "youtube": return stableId(source.provider, query ?? "");
     case "webhook": return stableId(source.provider, source.name);
   }
 }

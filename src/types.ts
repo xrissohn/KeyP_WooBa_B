@@ -16,6 +16,18 @@ export const sourcePlanSchema = z.discriminatedUnion("provider", [
     query: z.string().min(1).max(300).optional(),
   }),
   z.object({
+    provider: z.literal("ai_search"),
+    query: z.string().min(1).max(300),
+  }),
+  z.object({
+    provider: z.literal("serpapi"),
+    query: z.string().min(1).max(300),
+  }),
+  z.object({
+    provider: z.literal("youtube"),
+    query: z.string().min(1).max(300),
+  }),
+  z.object({
     provider: z.literal("webhook"),
     name: z.string().min(1).max(80),
   }),
@@ -30,6 +42,17 @@ export const searchPlanSchema = z.object({
 
 export type SourcePlan = z.infer<typeof sourcePlanSchema>;
 export type SearchPlan = z.infer<typeof searchPlanSchema>;
+
+export const itemReviewSchema = z.object({
+  accepted: z.boolean(),
+  relevanceScore: z.number().int().min(0).max(100),
+  credibilityScore: z.number().int().min(0).max(100),
+  reason: z.string().min(1).max(500),
+  signals: z.array(z.string().min(1).max(100)).max(8).default([]),
+  model: z.string().min(1).max(100),
+});
+
+export type ItemReview = z.infer<typeof itemReviewSchema>;
 
 export interface CollectedItem {
   provider: string;

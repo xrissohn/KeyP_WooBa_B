@@ -32,6 +32,18 @@ const PLAN_JSON_SCHEMA = {
             type: "object", additionalProperties: false, required: ["provider", "url", "query"],
             properties: { provider: { type: "string", const: "rss" }, url: { type: "string" }, query: { type: "string" } },
           },
+          {
+            type: "object", additionalProperties: false, required: ["provider", "query"],
+            properties: { provider: { type: "string", const: "ai_search" }, query: { type: "string" } },
+          },
+          {
+            type: "object", additionalProperties: false, required: ["provider", "query"],
+            properties: { provider: { type: "string", const: "serpapi" }, query: { type: "string" } },
+          },
+          {
+            type: "object", additionalProperties: false, required: ["provider", "query"],
+            properties: { provider: { type: "string", const: "youtube" }, query: { type: "string" } },
+          },
         ],
       },
     },
@@ -71,8 +83,12 @@ export class SearchPlanner {
                 "Use only the providers in the schema.",
                 `Enabled providers: ${enabledProviders}. Do not select disabled providers.`,
                 "Use X for timely public discussion, reactions, and first-hand posts.",
+                "Use ai_search for current web-grounded AI research and source discovery.",
+                "Use serpapi for broad web discovery and youtube only when video content is relevant.",
                 "Use RSS only with one of the explicitly allowed URLs.",
-                "Prefer short literal queries; do not invent facts or URLs.",
+                "Decompose the intent into 2-6 distinct, narrow queries while preserving every mandatory constraint.",
+                "Do not broaden a query by dropping required people, locations, technologies, dates, or event types.",
+                "Prefer short literal queries; do not invent facts or URLs. Avoid duplicate provider/query pairs.",
                 `Allowed RSS URLs: ${enabledRss}`,
               ].join(" "),
             },
@@ -106,6 +122,11 @@ export class SearchPlanner {
       sources.push({ provider: "naver", vertical: "news", query: cleaned });
     }
     if (config.x.bearerToken) sources.push({ provider: "x", query: cleaned });
+    if (this.hasAiSearchEngine()) sources.push({ provider: "ai_search", query: cleaned });
+    if (config.serpapi.key) sources.push({ provider: "serpapi", query: cleaned });
+    if (config.youtube.key && /(유튜브|youtube|영상|인터뷰|강의|리뷰)/i.test(cleaned)) {
+      sources.push({ provider: "youtube", query: cleaned });
+    }
     for (const url of config.defaultRssFeeds.slice(0, 5)) {
       sources.push({ provider: "rss", url, query: cleaned });
     }
@@ -123,12 +144,31 @@ export class SearchPlanner {
     if (config.naver.clientId && config.naver.clientSecret) providers.push("naver");
     if (config.x.bearerToken) providers.push("x");
     if (config.defaultRssFeeds.length > 0) providers.push("rss");
+    if (this.hasAiSearchEngine()) providers.push("ai_search");
+    if (config.serpapi.key) providers.push("serpapi");
+    if (config.youtube.key) providers.push("youtube");
     return providers;
+  }
+
+  private hasAiSearchEngine(): boolean {
+    return config.aiSearch.engines.some((engine) => {
+      if (engine === "perplexity") return Boolean(config.aiSearch.perplexity.key);
+      if (engine === "gemini") return Boolean(config.aiSearch.gemini.key);
+      if (engine === "xai") return Boolean(config.aiSearch.xai.key);
+      return false;
+    });
   }
 
   private withEnabledSources(plan: SearchPlan): SearchPlan {
     const enabled = new Set(this.enabledProviders());
-    const sources = plan.sources.filter((source) => enabled.has(source.provider));
+    const seen = new Set<string>();
+    const sources = plan.sources.filter((source) => {
+      if (!enabled.has(source.provider)) return false;
+      const key = JSON.stringify(source);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     if (sources.length === 0) throw new Error("AI plan did not contain an enabled provider");
     return searchPlanSchema.parse({ ...plan, intervalSeconds: config.pollIntervalSeconds, sources });
   }

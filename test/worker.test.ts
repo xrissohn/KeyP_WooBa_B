@@ -139,3 +139,132 @@ test("items published before registration are suppressed even when discovered la
   assert.equal(db.pollEvents(id, 0, 50).events.length, 0);
   db.close();
 });
+
+test("paused and deleted subscriptions do not collect or deliver new events", async () => {
+  const db = new AppDatabase(":memory:");
+  const createdAt = "2026-07-10T00:00:00.000Z";
+  const newItem: CollectedItem = {
+    provider: "naver:news",
+    externalId: "new-after-resume",
+    url: "https://example.com/new-after-resume",
+    title: "New after resume",
+    publishedAt: "2026-07-10T00:01:00.000Z",
+  };
+  const connector = new SequenceConnector([[], [newItem], [newItem]]);
+  const registry = new ConnectorRegistry({ naver: connector });
+  const pushed: number[] = [];
+  let now = new Date(createdAt);
+  const worker = new PollWorker(db, registry, {
+    async send(_installationId, _subscriptionId, events) {
+      pushed.push(...events.map((event) => event.eventId));
+      db.markPushSent(events.map((event) => event.eventId), now.toISOString());
+    },
+  }, 5, 5, () => now);
+  const id = randomUUID();
+  db.createSubscription({
+    id,
+    installationId: "fid-1",
+    keyword: "pause test",
+    webhookSecret: "secret",
+    now: createdAt,
+    plan: {
+      topic: "news",
+      normalizedKeywords: ["pause"],
+      intervalSeconds: 60,
+      sources: [{ provider: "naver", vertical: "news", query: "pause test" }],
+    },
+  });
+
+  await worker.tick();
+  assert.equal(connector.calls, 1);
+  assert.equal(db.setSubscriptionActive(id, "fid-1", false, now.toISOString()), true);
+  now = new Date(now.getTime() + 60_000);
+  await worker.tick();
+  assert.equal(connector.calls, 1);
+  assert.equal(db.pollEvents(id, 0, 50).events.length, 0);
+
+  assert.equal(db.setSubscriptionActive(id, "fid-1", true, now.toISOString()), true);
+  await worker.tick();
+  assert.equal(connector.calls, 2);
+  assert.equal(db.pollEvents(id, 0, 50).events.length, 1);
+  assert.equal(pushed.length, 1);
+
+  assert.equal(db.softDeleteSubscription(id, "fid-1", now.toISOString()), true);
+  now = new Date(now.getTime() + 60_000);
+  await worker.tick();
+  assert.equal(connector.calls, 2);
+  assert.equal(db.pollEventsForInstallation("fid-1", 0, 50).events.length, 0);
+  assert.equal(db.pollEvents(id, 0, 50).events.length, 1);
+  db.close();
+});
+
+test("AI review suppresses irrelevant candidates before polling and push", async () => {
+  const db = new AppDatabase(":memory:");
+  const createdAt = "2026-07-10T00:00:00.000Z";
+  const existing: CollectedItem = {
+    provider: "naver:news", externalId: "existing", url: "https://example.com/existing", title: "Existing",
+  };
+  const relevant: CollectedItem = {
+    provider: "naver:news", externalId: "relevant", url: "https://official.example.com/relevant", title: "Relevant",
+  };
+  const noise: CollectedItem = {
+    provider: "naver:news", externalId: "noise", url: "https://unknown.example.com/noise", title: "Noise",
+  };
+  const connector = new SequenceConnector([[existing], [existing, relevant, noise], [existing, relevant, noise]]);
+  const registry = new ConnectorRegistry({ naver: connector });
+  const pushed: number[] = [];
+  let reviewCalls = 0;
+  let now = new Date(createdAt);
+  const worker = new PollWorker(db, registry, {
+    async send(_installationId, _subscriptionId, events) {
+      pushed.push(...events.map((event) => event.eventId));
+      db.markPushSent(events.map((event) => event.eventId), now.toISOString());
+    },
+  }, 5, 5, () => now, {
+    async review(_subscription, candidates) {
+      reviewCalls++;
+      return candidates.map((item) => ({
+        accepted: item.externalId === "relevant",
+        relevanceScore: item.externalId === "relevant" ? 95 : 20,
+        credibilityScore: item.externalId === "relevant" ? 90 : 25,
+        reason: item.externalId === "relevant" ? "matches intent" : "unrelated",
+        signals: [],
+        model: "test-reviewer",
+      }));
+    },
+  });
+  const id = randomUUID();
+  db.createSubscription({
+    id,
+    installationId: "fid-1",
+    keyword: "relevant information",
+    webhookSecret: "secret",
+    now: createdAt,
+    plan: {
+      topic: "news",
+      normalizedKeywords: ["relevant"],
+      intervalSeconds: 60,
+      sources: [{ provider: "naver", vertical: "news", query: "relevant" }],
+    },
+  });
+
+  await worker.run(db.getSubscription(id)!);
+  now = new Date(now.getTime() + 60_000);
+  await worker.run(db.getSubscription(id)!);
+  now = new Date(now.getTime() + 60_000);
+  await worker.run(db.getSubscription(id)!);
+
+  const events = db.pollEvents(id, 0, 50).events;
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.item.externalId, "relevant");
+  assert.equal(events[0]?.review?.model, "test-reviewer");
+  assert.equal(pushed.length, 1);
+  assert.equal(reviewCalls, 1);
+  const rejected = db.sqlite.prepare(`
+    SELECT review_status FROM subscription_events e
+    JOIN items i ON i.id = e.item_id
+    WHERE e.subscription_id = ? AND i.external_id = 'noise'
+  `).get(id) as { review_status: string };
+  assert.equal(rejected.review_status, "rejected");
+  db.close();
+});

@@ -3,6 +3,9 @@ import test from "node:test";
 import { NaverConnector } from "../src/connectors/naver.js";
 import { RssConnector } from "../src/connectors/rss.js";
 import { XConnector } from "../src/connectors/x.js";
+import { AiSearchConnector } from "../src/connectors/ai-search.js";
+import { SerpApiConnector } from "../src/connectors/serpapi.js";
+import { YoutubeConnector } from "../src/connectors/youtube.js";
 
 test("NAVER connector normalizes results and uses one request per run", async () => {
   const originalFetch = globalThis.fetch;
@@ -178,4 +181,74 @@ test("connectors fail fast when credentials are missing", async () => {
     ),
     /X_BEARER_TOKEN/,
   );
+});
+
+test("AI search uses grounded Perplexity search results instead of generated links", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody: Record<string, unknown> | undefined;
+  try {
+    globalThis.fetch = async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({
+        choices: [{ message: { content: "answer text" } }],
+        search_results: [{
+          title: "Official release",
+          url: "https://official.example.com/releases/42",
+          date: "2026-07-10T01:00:00Z",
+          snippet: "Primary source announcement",
+        }],
+      });
+    };
+    const results = await new AiSearchConnector({
+      engines: ["perplexity"],
+      perplexity: { key: "key", url: "https://api.perplexity.ai/v1/sonar", model: "sonar" },
+      gemini: { key: undefined, baseUrl: "https://gemini.example/models", model: "flash" },
+      xai: { key: undefined, url: "https://xai.example/responses", model: "grok" },
+    }).collect({ provider: "ai_search", query: "release 42" });
+
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.provider, "ai_search:perplexity");
+    assert.equal(results[0]?.url, "https://official.example.com/releases/42");
+    assert.equal(results[0]?.publishedAt, "2026-07-10T01:00:00.000Z");
+    assert.equal(requestBody?.search_mode, "web");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("SerpAPI and YouTube connectors normalize structured search results", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (input) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.hostname === "serpapi.example") {
+        assert.equal(url.searchParams.get("q"), "backend jobs");
+        return Response.json({ organic_results: [{
+          title: "Backend opening",
+          link: "https://jobs.example.com/42",
+          snippet: "Official careers page",
+        }] });
+      }
+      assert.equal(url.searchParams.get("type"), "video");
+      return Response.json({ items: [{
+        id: { videoId: "video-42" },
+        snippet: {
+          title: "Official interview",
+          description: "New interview",
+          publishedAt: "2026-07-10T02:00:00Z",
+        },
+      }] });
+    };
+    const serp = await new SerpApiConnector({ key: "key", url: "https://serpapi.example/search.json" })
+      .collect({ provider: "serpapi", query: "backend jobs" });
+    const youtube = await new YoutubeConnector({ key: "key", url: "https://youtube.example/search" })
+      .collect({ provider: "youtube", query: "interview" });
+
+    assert.equal(serp[0]?.provider, "serpapi:google");
+    assert.equal(serp[0]?.url, "https://jobs.example.com/42");
+    assert.equal(youtube[0]?.url, "https://www.youtube.com/watch?v=video-42");
+    assert.equal(youtube[0]?.publishedAt, "2026-07-10T02:00:00.000Z");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { CollectedItem, SearchPlan, StoredSubscription } from "./types.js";
+import type { CollectedItem, ItemReview, SearchPlan, StoredSubscription } from "./types.js";
 
 type SqliteValue = string | number | bigint | null;
 
@@ -19,6 +19,7 @@ export interface EventPage {
       firstSeenAt: string;
     };
     createdAt: string;
+    review?: ItemReview;
   }>;
   nextCursor: number;
   hasMore: boolean;
@@ -65,7 +66,8 @@ export class AppDatabase {
         next_run_at TEXT NOT NULL,
         last_run_at TEXT,
         lease_owner TEXT,
-        lease_until TEXT
+        lease_until TEXT,
+        deleted_at TEXT
       );
 
       CREATE INDEX IF NOT EXISTS subscriptions_due_idx
@@ -128,6 +130,12 @@ export class AppDatabase {
         visibility TEXT NOT NULL CHECK(visibility IN ('visible', 'suppressed')),
         created_at TEXT NOT NULL,
         push_sent_at TEXT,
+        review_status TEXT NOT NULL DEFAULT 'not_reviewed',
+        relevance_score INTEGER,
+        credibility_score INTEGER,
+        review_reason TEXT,
+        review_signals_json TEXT,
+        review_model TEXT,
         UNIQUE(subscription_id, item_id)
       );
 
@@ -164,6 +172,13 @@ export class AppDatabase {
     this.ensureColumn("devices", "installation_id", "TEXT");
     this.ensureColumn("subscriptions", "lease_owner", "TEXT");
     this.ensureColumn("subscriptions", "lease_until", "TEXT");
+    this.ensureColumn("subscriptions", "deleted_at", "TEXT");
+    this.ensureColumn("subscription_events", "review_status", "TEXT NOT NULL DEFAULT 'not_reviewed'");
+    this.ensureColumn("subscription_events", "relevance_score", "INTEGER");
+    this.ensureColumn("subscription_events", "credibility_score", "INTEGER");
+    this.ensureColumn("subscription_events", "review_reason", "TEXT");
+    this.ensureColumn("subscription_events", "review_signals_json", "TEXT");
+    this.ensureColumn("subscription_events", "review_model", "TEXT");
     this.sqlite.exec(`
       UPDATE subscriptions SET installation_id = user_id WHERE installation_id IS NULL;
       UPDATE devices SET installation_id = user_id WHERE installation_id IS NULL;
@@ -174,11 +189,15 @@ export class AppDatabase {
       SELECT installation_id, MAX(platform), MAX(active), MIN(created_at), MAX(updated_at), MAX(updated_at)
       FROM devices WHERE installation_id IS NOT NULL GROUP BY installation_id;
       CREATE INDEX IF NOT EXISTS subscriptions_installation_idx
-        ON subscriptions(installation_id, active, created_at);
+        ON subscriptions(installation_id, deleted_at, active, created_at);
       CREATE INDEX IF NOT EXISTS devices_installation_idx
         ON devices(installation_id, active);
       CREATE INDEX IF NOT EXISTS subscriptions_lease_idx
-        ON subscriptions(active, next_run_at, lease_until);
+        ON subscriptions(active, deleted_at, next_run_at, lease_until);
+      CREATE INDEX IF NOT EXISTS subscriptions_visible_idx
+        ON subscriptions(installation_id, deleted_at, created_at);
+      CREATE INDEX IF NOT EXISTS subscriptions_runnable_idx
+        ON subscriptions(active, deleted_at, next_run_at, lease_until);
     `);
   }
 
@@ -362,7 +381,7 @@ export class AppDatabase {
   getSubscription(id: string): StoredSubscription | undefined {
     const row = this.sqlite.prepare(`
       SELECT id, installation_id, keyword, plan_json, active, created_at, next_run_at
-      FROM subscriptions WHERE id = ? AND active = 1
+      FROM subscriptions WHERE id = ? AND deleted_at IS NULL
     `).get(id) as Record<string, SqliteValue> | undefined;
 
     return row ? this.mapSubscription(row) : undefined;
@@ -372,35 +391,84 @@ export class AppDatabase {
     const rows = this.sqlite.prepare(`
       SELECT id, installation_id, keyword, plan_json, active, created_at, next_run_at
       FROM subscriptions
-      WHERE installation_id = ?
+      WHERE installation_id = ? AND deleted_at IS NULL
       ORDER BY created_at DESC
     `).all(installationId) as Array<Record<string, SqliteValue>>;
     return rows.map((row) => this.mapSubscription(row));
   }
 
-  deactivateSubscription(id: string, installationId: string): boolean {
-    const result = this.sqlite.prepare(`
-      UPDATE subscriptions SET active = 0, lease_owner = NULL, lease_until = NULL
-      WHERE id = ? AND installation_id = ?
-    `)
-      .run(id, installationId);
-    return result.changes === 1;
+  softDeleteSubscription(id: string, installationId: string, now: string): boolean {
+    this.sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.sqlite.prepare(`
+        UPDATE subscriptions
+        SET active = 0, deleted_at = ?, lease_owner = NULL, lease_until = NULL
+        WHERE id = ? AND installation_id = ? AND deleted_at IS NULL
+      `).run(now, id, installationId);
+      if (result.changes === 0) {
+        this.sqlite.exec("ROLLBACK");
+        return false;
+      }
+      this.sqlite.prepare(`
+        UPDATE push_deliveries
+        SET status = 'invalid', last_error = 'subscription deleted', updated_at = ?
+        WHERE status = 'pending' AND event_id IN (
+          SELECT id FROM subscription_events WHERE subscription_id = ?
+        )
+      `).run(now, id);
+      this.sqlite.prepare(`
+        UPDATE subscription_events SET push_sent_at = COALESCE(push_sent_at, ?)
+        WHERE subscription_id = ?
+      `).run(now, id);
+      this.sqlite.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   setSubscriptionActive(id: string, installationId: string, active: boolean, now: string): boolean {
-    const result = this.sqlite.prepare(`
-      UPDATE subscriptions
-      SET active = ?,
-          next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
-          lease_owner = NULL,
-          lease_until = NULL
-      WHERE id = ? AND installation_id = ?
-    `).run(active ? 1 : 0, active ? 1 : 0, now, id, installationId);
-    return result.changes === 1;
+    this.sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.sqlite.prepare(`
+        UPDATE subscriptions
+        SET active = ?,
+            next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
+            lease_owner = NULL,
+            lease_until = NULL
+        WHERE id = ? AND installation_id = ? AND deleted_at IS NULL
+      `).run(active ? 1 : 0, active ? 1 : 0, now, id, installationId);
+      if (result.changes === 0) {
+        this.sqlite.exec("ROLLBACK");
+        return false;
+      }
+      if (!active) {
+        this.sqlite.prepare(`
+          UPDATE push_deliveries
+          SET status = 'invalid', last_error = 'subscription paused', updated_at = ?
+          WHERE status = 'pending' AND event_id IN (
+            SELECT id FROM subscription_events WHERE subscription_id = ?
+          )
+        `).run(now, id);
+        this.sqlite.prepare(`
+          UPDATE subscription_events SET push_sent_at = COALESCE(push_sent_at, ?)
+          WHERE subscription_id = ?
+        `).run(now, id);
+      }
+      this.sqlite.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   getWebhookSecret(id: string): string | undefined {
-    const row = this.sqlite.prepare("SELECT webhook_secret FROM subscriptions WHERE id = ? AND active = 1")
+    const row = this.sqlite.prepare(`
+      SELECT webhook_secret FROM subscriptions
+      WHERE id = ? AND active = 1 AND deleted_at IS NULL
+    `)
       .get(id) as { webhook_secret: string } | undefined;
     return row?.webhook_secret;
   }
@@ -409,7 +477,7 @@ export class AppDatabase {
     const rows = this.sqlite.prepare(`
       SELECT id, installation_id, keyword, plan_json, active, created_at, next_run_at
       FROM subscriptions
-      WHERE active = 1 AND next_run_at <= ?
+      WHERE active = 1 AND deleted_at IS NULL AND next_run_at <= ?
       ORDER BY next_run_at ASC LIMIT ?
     `).all(now, limit) as Array<Record<string, SqliteValue>>;
     return rows.map((row) => this.mapSubscription(row));
@@ -427,6 +495,7 @@ export class AppDatabase {
         SELECT id, installation_id, keyword, plan_json, active, created_at, next_run_at
         FROM subscriptions
         WHERE active = 1
+          AND deleted_at IS NULL
           AND next_run_at <= ?
           AND (lease_until IS NULL OR lease_until <= ?)
         ORDER BY next_run_at ASC
@@ -450,6 +519,13 @@ export class AppDatabase {
       SET next_run_at = ?, last_run_at = ?, lease_owner = NULL, lease_until = NULL
       WHERE id = ?
     `).run(nextRunAt, lastRunAt, subscriptionId);
+  }
+
+  isSubscriptionRunnable(subscriptionId: string): boolean {
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1 FROM subscriptions
+      WHERE id = ? AND active = 1 AND deleted_at IS NULL
+    `).get(subscriptionId));
   }
 
   getSourceState(subscriptionId: string, sourceKey: string): {
@@ -584,6 +660,7 @@ export class AppDatabase {
     item: CollectedItem;
     canonicalUrl: string;
     visible: boolean;
+    review?: ItemReview;
     now: string;
   }): { inserted: boolean; eventId?: number } {
     this.sqlite.exec("BEGIN IMMEDIATE");
@@ -612,9 +689,22 @@ export class AppDatabase {
       const itemRow = this.sqlite.prepare("SELECT id FROM items WHERE provider = ? AND external_id = ?")
         .get(input.item.provider, input.item.externalId) as { id: number };
       const result = this.sqlite.prepare(`
-        INSERT OR IGNORE INTO subscription_events(subscription_id, item_id, visibility, created_at)
-        VALUES (?, ?, ?, ?)
-      `).run(input.subscriptionId, itemRow.id, input.visible ? "visible" : "suppressed", input.now);
+        INSERT OR IGNORE INTO subscription_events(
+          subscription_id, item_id, visibility, created_at, review_status,
+          relevance_score, credibility_score, review_reason, review_signals_json, review_model
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        input.subscriptionId,
+        itemRow.id,
+        input.visible ? "visible" : "suppressed",
+        input.now,
+        input.review ? input.review.accepted ? "accepted" : "rejected" : "not_reviewed",
+        input.review?.relevanceScore ?? null,
+        input.review?.credibilityScore ?? null,
+        input.review?.reason ?? null,
+        input.review ? JSON.stringify(input.review.signals) : null,
+        input.review?.model ?? null,
+      );
       this.sqlite.exec("COMMIT");
       return result.changes === 1
         ? { inserted: true, eventId: Number(result.lastInsertRowid) }
@@ -625,12 +715,23 @@ export class AppDatabase {
     }
   }
 
+  hasSubscriptionItem(subscriptionId: string, provider: string, externalId: string): boolean {
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1
+      FROM subscription_events e
+      JOIN items i ON i.id = e.item_id
+      WHERE e.subscription_id = ? AND i.provider = ? AND i.external_id = ?
+    `).get(subscriptionId, provider, externalId));
+  }
+
   pollEvents(subscriptionId: string, cursor: number, limit: number): EventPage {
     const rows = this.sqlite.prepare(`
       SELECT
         e.id, e.subscription_id, e.created_at,
         i.provider, i.external_id, i.canonical_url, i.title, i.summary,
-        i.published_at, i.first_seen_at
+        i.published_at, i.first_seen_at,
+        e.review_status, e.relevance_score, e.credibility_score,
+        e.review_reason, e.review_signals_json, e.review_model
       FROM subscription_events e
       JOIN items i ON i.id = e.item_id
       WHERE e.subscription_id = ? AND e.visibility = 'visible' AND e.id > ?
@@ -645,11 +746,16 @@ export class AppDatabase {
       SELECT
         e.id, e.subscription_id, e.created_at,
         i.provider, i.external_id, i.canonical_url, i.title, i.summary,
-        i.published_at, i.first_seen_at
+        i.published_at, i.first_seen_at,
+        e.review_status, e.relevance_score, e.credibility_score,
+        e.review_reason, e.review_signals_json, e.review_model
       FROM subscription_events e
       JOIN subscriptions s ON s.id = e.subscription_id
       JOIN items i ON i.id = e.item_id
-      WHERE s.installation_id = ? AND e.visibility = 'visible' AND e.id > ?
+      WHERE s.installation_id = ?
+        AND s.deleted_at IS NULL
+        AND e.visibility = 'visible'
+        AND e.id > ?
       ORDER BY e.id ASC LIMIT ?
     `).all(installationId, cursor, limit + 1) as Array<Record<string, SqliteValue>>;
     return this.mapEventPage(rows, cursor, limit);
@@ -658,7 +764,7 @@ export class AppDatabase {
   private mapEventPage(rows: Array<Record<string, SqliteValue>>, cursor: number, limit: number): EventPage {
     const hasMore = rows.length > limit;
     const pageRows = rows.slice(0, limit);
-    const events = pageRows.map((row) => ({
+    const events = pageRows.toReversed().map((row) => ({
       cursor: Number(row.id),
       subscriptionId: String(row.subscription_id),
       item: {
@@ -671,10 +777,18 @@ export class AppDatabase {
         firstSeenAt: String(row.first_seen_at),
       },
       createdAt: String(row.created_at),
+      review: row.review_status === "accepted" ? {
+        accepted: true,
+        relevanceScore: Number(row.relevance_score),
+        credibilityScore: Number(row.credibility_score),
+        reason: String(row.review_reason),
+        signals: row.review_signals_json ? JSON.parse(String(row.review_signals_json)) as string[] : [],
+        model: String(row.review_model),
+      } : undefined,
     }));
     return {
       events,
-      nextCursor: events.at(-1)?.cursor ?? cursor,
+      nextCursor: pageRows.length > 0 ? Number(pageRows.at(-1)?.id) : cursor,
       hasMore,
     };
   }
@@ -762,6 +876,7 @@ export class AppDatabase {
         last_error = ?,
         updated_at = ?
       WHERE event_id = ? AND token = ?
+        AND status = 'pending'
     `).run(
       input.status,
       input.nextAttemptAt ?? input.now,

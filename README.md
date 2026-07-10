@@ -21,6 +21,9 @@
 - FCM 토큰별 전달 상태, 500개 단위 batch와 재시도 outbox
 - 구독 목록/일시정지/재개 및 디바이스 해제
 - Firebase Installation ID 기반 로그인 없는 설치 식별과 App Check 검증
+- Perplexity/Gemini/xAI 우선순위 기반 grounded AI 검색
+- SerpAPI 웹 검색과 YouTube 최신 영상 검색
+- 신규 후보의 AI 관련도·출처 신뢰도 배치 검증 및 fail-closed 알림 필터
 
 ## 실행
 
@@ -41,6 +44,13 @@ pnpm dev
 | 변수 | 용도 |
 |---|---|
 | `AI_API_KEY` | OpenAI-compatible Chat Completions API 키 |
+| `AI_REVIEW_*` | AI 검증 활성화, 필수 여부, 관련도·신뢰도 임계값 |
+| `AI_SEARCH_ENGINES` | `perplexity,gemini,xai` 검색 fallback 우선순위 |
+| `PERPLEXITY_API_KEY` | Perplexity Sonar grounded search |
+| `GEMINI_API_KEY` | Gemini Google Search grounding |
+| `XAI_API_KEY` | Grok web search fallback |
+| `SERPAPI_API_KEY` | SerpAPI Google 검색 |
+| `YOUTUBE_API_KEY` | YouTube Data API 검색 전용 키 |
 | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | NAVER 검색 API |
 | `X_BEARER_TOKEN` | X Recent Search API Bearer token |
 | `DEFAULT_RSS_FEEDS` | AI가 선택할 수 있는 RSS URL allowlist |
@@ -53,7 +63,7 @@ pnpm dev
 
 NAVER 검색의 API HUB 이전으로 endpoint가 변경되면 `NAVER_SEARCH_BASE_URL`을 새 endpoint로 설정할 수 있습니다.
 
-자격 증명이 없는 공급자는 AI 검색 계획과 fallback 계획에서 자동 제외됩니다. X 검색은 최근 게시물을 최대 100개씩 조회하고 author expansion으로 실제 게시물 URL을 구성합니다.
+자격 증명이 없는 공급자는 AI 검색 계획과 fallback 계획에서 자동 제외됩니다. AI 검색 엔진은 `AI_SEARCH_ENGINES` 순서대로 시도하고 첫 성공 결과만 사용해 중복 호출을 줄입니다. Google AI Studio/Gemini 키와 YouTube Data API 키는 서로 다른 API 제한을 적용한 별도 키 사용을 권장합니다.
 
 ## API 흐름
 
@@ -101,7 +111,7 @@ curl 'http://127.0.0.1:3000/v1/subscriptions/SUBSCRIPTION_ID/events?cursor=0&lim
 
 응답의 `nextCursor`를 저장하고 다음 요청에 사용합니다. cursor는 검색 API의 offset이 아니라 내부의 단조 증가 이벤트 ID이므로 응답 순위 변화에 영향을 받지 않습니다.
 
-구독 목록은 `GET /v1/subscriptions`, 일시정지/재개는 다음 API를 사용합니다.
+구독 목록은 `GET /v1/subscriptions`, 알림 OFF/ON은 다음 API를 사용합니다. `active=false`인 동안에는 해당 구독의 외부 수집, webhook 입력, 신규 feed 생성과 FCM 전송이 모두 중지되며 기존 feed는 유지됩니다.
 
 ```bash
 curl -X PATCH http://127.0.0.1:3000/v1/subscriptions/SUBSCRIPTION_ID/status \
@@ -109,6 +119,8 @@ curl -X PATCH http://127.0.0.1:3000/v1/subscriptions/SUBSCRIPTION_ID/status \
   -H 'x-firebase-installation-id: cFirebaseInstallationId123' \
   -d '{"active":false}'
 ```
+
+`DELETE /v1/subscriptions/SUBSCRIPTION_ID`는 soft delete입니다. 스케줄러와 전송을 중지하고 구독과 feed를 사용자 API에서 즉시 숨기지만, 구독·수집 이벤트·아이템은 DB에 보존합니다.
 
 ### 4. FCM 토큰 갱신
 
@@ -132,13 +144,14 @@ curl -X POST http://127.0.0.1:3000/v1/webhooks/SUBSCRIPTION_ID/default \
 
 ## 신규 판정
 
-각 polling 소스의 첫 성공 실행은 baseline으로 저장하고 알림하지 않습니다. 이후 처음 관측된 항목만 `subscription_events`에 visible 이벤트로 생성합니다. 명시된 `publishedAt`이 구독 생성 시각보다 과거이면 뒤늦게 검색된 문서로 보고 억제합니다.
+각 polling 소스의 첫 성공 실행은 baseline으로 저장하고 알림하지 않습니다. 이후 처음 관측된 후보만 OpenAI structured output 검증에 전달합니다. 원래 자연어 의도와의 관련도, 출처·도메인·게시 형태에 기반한 신뢰도 점수가 서버 임계값을 모두 통과한 항목만 visible 이벤트와 FCM 알림이 됩니다. 명시된 `publishedAt`이 구독 생성 시각보다 과거이면 AI 호출 없이 억제합니다.
 
 ```text
 provider + external_id             전역 항목 중복 방지
 subscription_id + item_id          구독별 이벤트 중복 방지
 subscription_events.id             클라이언트 polling cursor
 subscription_events.push_sent_at   FCM outbox 상태
+subscription_events.review_*        AI 검증 점수, 판정 근거와 모델
 push_deliveries(event_id, token)    디바이스별 FCM 전달 상태
 source_cache.source_key             동일 검색 계획의 공유 수집 결과
 provider_usage(provider, day)       공급자 전체 일일 호출량

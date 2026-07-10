@@ -2,6 +2,7 @@ package com.jetbrains.kmpapp.model
 
 data class FeedItem(
     val id: String,
+    val subscriptionId: String,
     val provider: String,
     val title: String,
     val summary: String?,

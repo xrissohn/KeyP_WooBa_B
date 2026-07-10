@@ -6,7 +6,7 @@ import com.jetbrains.kmpapp.model.Interest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-class SubscriptionRepository(private val api: KeypApi) {
+class SubscriptionRepository(private val api: KeypApi, private val feedRepository: FeedRepository) {
     private val _interests = MutableStateFlow<List<Interest>>(emptyList())
     val interests = _interests.asStateFlow()
 
@@ -29,6 +29,7 @@ class SubscriptionRepository(private val api: KeypApi) {
     suspend fun delete(id: String) {
         api.deleteSubscription(id)
         _interests.value = _interests.value.filterNot { it.id == id }
+        feedRepository.removeSubscription(id)
     }
 }
 
@@ -43,14 +44,28 @@ class FeedRepository(private val api: KeypApi) {
             val page = api.listEvents(cursor, limit = 50)
             cursor = page.nextCursor
             _items.value = (page.events.map {
-                FeedItem(it.cursor.toString(), it.item.provider, it.item.title, it.item.summary, it.item.url, it.createdAt)
-            } + _items.value).distinctBy { it.id }
+                FeedItem(
+                    id = it.cursor.toString(),
+                    subscriptionId = it.subscriptionId,
+                    provider = it.item.provider,
+                    title = it.item.title,
+                    summary = it.item.summary,
+                    url = it.item.url,
+                    createdAt = it.createdAt,
+                )
+            } + _items.value)
+                .distinctBy { it.id }
+                .sortedByDescending { it.id.toLongOrNull() ?: 0L }
             hasMore = page.hasMore
         }
     }
 
     fun toggleBookmark(id: String) {
         _items.value = _items.value.map { if (it.id == id) it.copy(bookmarked = !it.bookmarked) else it }
+    }
+
+    fun removeSubscription(subscriptionId: String) {
+        _items.value = _items.value.filterNot { it.subscriptionId == subscriptionId }
     }
 }
 

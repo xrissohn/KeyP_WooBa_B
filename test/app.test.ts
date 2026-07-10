@@ -108,6 +108,18 @@ test("webhook events are authenticated, deduplicated, and available through curs
   });
   assert.equal(pausedList.json().subscriptions.length, 1);
   assert.equal(pausedList.json().subscriptions[0].active, false);
+  const pausedWebhook = await app.inject({
+    method: "POST",
+    url: subscription.webhook.url,
+    headers: { "x-webhook-secret": subscription.webhook.secret },
+    payload: { items: [{ id: "paused", url: "https://example.com/paused", title: "Paused" }] },
+  });
+  assert.equal(pausedWebhook.statusCode, 401);
+  assert.equal((await app.inject({
+    method: "GET",
+    url: "/v1/events?cursor=0",
+    headers: { "x-firebase-installation-id": FID_ONE },
+  })).json().events.length, 1);
   const resumed = await app.inject({
     method: "PATCH",
     url: `/v1/subscriptions/${subscription.id}/status`,
@@ -129,6 +141,34 @@ test("webhook events are authenticated, deduplicated, and available through curs
     headers: { "x-firebase-installation-id": FID_ONE },
     payload: { token },
   })).statusCode, 204);
+
+  const deleted = await app.inject({
+    method: "DELETE",
+    url: `/v1/subscriptions/${subscription.id}`,
+    headers: { "x-firebase-installation-id": FID_ONE },
+  });
+  assert.equal(deleted.statusCode, 204);
+  assert.equal((await app.inject({
+    method: "GET",
+    url: "/v1/subscriptions",
+    headers: { "x-firebase-installation-id": FID_ONE },
+  })).json().subscriptions.length, 0);
+  assert.equal((await app.inject({
+    method: "GET",
+    url: "/v1/events?cursor=0",
+    headers: { "x-firebase-installation-id": FID_ONE },
+  })).json().events.length, 0);
+  assert.equal((await app.inject({
+    method: "GET",
+    url: `/v1/subscriptions/${subscription.id}/events`,
+    headers: { "x-firebase-installation-id": FID_ONE },
+  })).statusCode, 404);
+  assert.equal(db.pollEvents(subscription.id, 0, 50).events.length, 1);
+  const retained = db.sqlite.prepare(`
+    SELECT active, deleted_at FROM subscriptions WHERE id = ?
+  `).get(subscription.id) as { active: number; deleted_at: string | null };
+  assert.equal(retained.active, 0);
+  assert.ok(retained.deleted_at);
 
   await app.close();
   db.close();
