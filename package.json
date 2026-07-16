@@ -28,5 +28,27 @@
   },
   "engines": {
     "node": ">=22.5"
-  }
+  },
+  "description": "Open-source, cost-aware AI interest radar with multi-source collection, relevance review, cursor feeds, and push delivery.",
+  "license": "MIT",
+  "author": "KeyP contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xrissohn/KeyP_WooBa_B.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xrissohn/KeyP_WooBa_B/issues"
+  },
+  "homepage": "https://github.com/xrissohn/KeyP_WooBa_B#readme",
+  "keywords": [
+    "interest-monitoring",
+    "ai-agent",
+    "information-retrieval",
+    "rss",
+    "notifications",
+    "fastify",
+    "openapi",
+    "firebase",
+    "kotlin-multiplatform"
+  ]
 }
