@@ -1,0 +1,51 @@
+name: Feature request
+description: Propose an improvement to KeyP
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the user problem before proposing an implementation. Large changes should be discussed before a pull request.
+  - type: checkboxes
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: This request does not include credentials or personal data.
+          required: true
+  - type: textarea
+    attributes:
+      label: Problem
+      description: Who has this problem and why does it matter?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed outcome
+      description: Describe the desired behavior without requiring a specific implementation.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    attributes:
+      label: Area
+      options:
+        - Backend API
+        - Worker or scheduler
+        - AI planning or review
+        - Provider connector
+        - FCM or Firebase
+        - Android app
+        - iOS app
+        - Documentation
+        - Community or release process
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Additional context
