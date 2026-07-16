@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible problem in KeyP
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve KeyP. Do not include API keys, tokens, private URLs, personal data, or vulnerability details. Report security issues privately using SECURITY.md.
+  - type: checkboxes
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: I removed all credentials and personal data.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+  - type: input
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Component
+      options:
+        - Backend API
+        - Worker or scheduler
+        - AI planning or review
+        - Provider connector
+        - FCM or Firebase
+        - Android app
+        - iOS app
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction steps
+      placeholder: Provide the smallest reproducible example with secrets redacted.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Environment
+      placeholder: OS, Node.js or mobile version, provider, and relevant non-secret configuration.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Add sanitized logs or screenshots if useful.
