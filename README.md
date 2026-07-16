@@ -1,4 +1,112 @@
-# KeyP_WooBa_B
+# KeyP — Open Interest Radar
+
+[![CI](https://github.com/xrissohn/KeyP_WooBa_B/actions/workflows/ci.yml/badge.svg)](https://github.com/xrissohn/KeyP_WooBa_B/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/xrissohn/KeyP_WooBa_B)](https://github.com/xrissohn/KeyP_WooBa_B/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/xrissohn/KeyP_WooBa_B)](https://github.com/xrissohn/KeyP_WooBa_B/forks)
+
+**Turn a natural-language interest into a cost-aware monitoring plan, collect only new information, verify relevance and source credibility, and deliver the result through an API or push notification.**
+
+KeyP is an early-stage open-source reference implementation for personalized information-monitoring agents. It combines a TypeScript/Fastify backend with a Kotlin Multiplatform mobile client and keeps AI optional: when an AI endpoint or credential is unavailable, deterministic planning still provides a testable local workflow.
+
+> **Project status:** Alpha. The public repository was opened in July 2026. Adoption metrics will be reported from verifiable GitHub releases and deployments as the community grows.
+
+[한국어 상세 문서로 이동](#한국어-상세-문서)
+
+## Why KeyP
+
+Most monitoring products are tied to one source, poll every user independently, or send every match without validating whether it is genuinely new and relevant. KeyP provides reusable building blocks for developers creating job, grant, event, product-release, regulatory-change, news, or niche-topic monitoring services:
+
+- provider-aware plans generated from natural language;
+- deterministic fallback behavior for local development and AI outages;
+- NAVER, X, RSS/Atom, grounded AI search, SerpAPI, YouTube, and webhook connectors;
+- source-level baseline suppression and publication-time checks;
+- provider ID and canonical URL deduplication backed by database constraints;
+- shared source caching, minimum polling intervals, and daily provider budgets;
+- batched relevance and source-credibility review with fail-closed filtering;
+- monotonic cursor feeds, bookmarks, FCM delivery tracking, and retry outbox;
+- OpenAPI 3.1 documentation and contract tests;
+- CI-enforced thresholds of 85% line, 70% branch, and 75% function coverage.
+
+## Architecture
+
+| Layer | Responsibility |
+| --- | --- |
+| Planner | Converts a natural-language interest into validated source plans |
+| Connectors | Collects candidates from search APIs, RSS/Atom, and webhooks |
+| Review | Scores relevance and source credibility before user-visible delivery |
+| Storage | Maintains subscriptions, baselines, deduplication, cursors, and budgets |
+| Worker | Schedules shared collection with leases and provider safety limits |
+| Delivery | Exposes polling APIs and sends FCM notifications through an outbox |
+| Mobile | Provides Kotlin Multiplatform Android/iOS client foundations |
+
+The backend runs as one process for the local MVP and can split into API and worker roles. Multi-instance production deployments should replace local SQLite coordination with PostgreSQL and a lease-capable queue such as Redis/BullMQ or SQS.
+
+## Quick start
+
+Requirements: Node.js 22.5 or later and pnpm.
+
+```bash
+git clone https://github.com/xrissohn/KeyP_WooBa_B.git
+cd KeyP_WooBa_B
+pnpm install
+cp .env.example .env
+pnpm dev
+```
+
+The API starts at `http://127.0.0.1:3000`. Provider credentials are optional for the local planning, webhook, and polling flow. Add only the credentials required for the connectors you want to test.
+
+```bash
+curl http://127.0.0.1:3000/health
+
+curl -X POST http://127.0.0.1:3000/v1/subscriptions \
+  -H 'content-type: application/json' \
+  -d '{"keyword":"Open-source AI maintainer programs"}'
+```
+
+## Production security warning
+
+The example configuration currently sets Firebase installation identity and App Check enforcement to `false` for local integration work. In that mode, unauthenticated requests share one anonymous installation identity and therefore do **not** provide user-level data isolation.
+
+Do not expose the anonymous mode to the public internet. Before a shared or production deployment, enable both controls, configure Firebase Admin credentials through a secret manager, use TLS, rotate webhook secrets, and review [SECURITY.md](SECURITY.md).
+
+## Documentation
+
+- [Human-readable API guide](docs/API.md)
+- [OpenAPI 3.1 specification](docs/openapi.yaml)
+- [Contribution guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Changelog and release notes](CHANGELOG.md)
+
+## Development
+
+```bash
+pnpm typecheck
+pnpm build
+pnpm test
+pnpm test:coverage
+pnpm run ci
+```
+
+Pull requests should include tests for behavior changes and update the README, OpenAPI specification, API guide, and `.env.example` whenever the public contract changes. See [CONTRIBUTING.md](CONTRIBUTING.md) and use the repository's issue templates for bugs and feature proposals.
+
+## Roadmap
+
+- Restore mandatory Firebase Installation ID and App Check verification for shared deployments
+- Add PostgreSQL storage and a distributed queue adapter
+- Publish reproducible Docker and GitHub Release artifacts
+- Add more regional and domain-specific connectors
+- Expand mobile testing and release automation
+- Publish transparent adoption and reliability metrics
+
+## License
+
+KeyP is available under the [MIT License](LICENSE).
+
+---
+
+## 한국어 상세 문서
 
 관심사를 KeyP하세요.
 
@@ -201,3 +309,8 @@ pnpm run ci
 `pnpm run ci`는 typecheck, build, 전체 테스트를 순서대로 실행합니다. Coverage 기준은 line 85%, branch 70%, function 75%이며 기준 미달 시 실패합니다. GitHub Actions는 `main`, `develop`, `backend` push와 `main`, `develop` 대상 pull request에서 같은 명령을 실행합니다.
 
 현재 저장소는 단일 프로세스 MVP를 위해 Node 내장 SQLite를 사용합니다. 다중 인스턴스 운영에서는 PostgreSQL로 저장소를 이전하고, 워커는 Redis/BullMQ 또는 SQS 같은 lease 가능한 queue로 분리해야 동일 구독의 동시 실행을 방지할 수 있습니다.
+
+
+## 커뮤니티와 라이선스
+
+버그와 기능 제안은 GitHub 이슈 템플릿을 사용해 주세요. 코드 기여 전 [CONTRIBUTING.md](CONTRIBUTING.md)를 확인하고, 보안 취약점은 공개 이슈가 아니라 [SECURITY.md](SECURITY.md)의 비공개 절차로 신고해 주세요. 이 프로젝트는 [MIT License](LICENSE)로 배포됩니다.
