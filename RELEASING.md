@@ -31,3 +31,8 @@ Use Semantic Versioning. While the project is in alpha, breaking changes may occ
 - Open an issue for any deferred work or known limitation.
 - Monitor issues, security reports, and failed deployments.
 - Report stars, forks, release downloads, external deployments, and active contributors exactly as observed; never estimate or combine unrelated product metrics.
+
+
+## Automated release workflow
+
+Merging a change to `package.json`, `CHANGELOG.md`, or the release workflow on `main` runs `.github/workflows/publish-release.yml`. The workflow reads the version from `package.json` and creates the matching `v<version>` GitHub pre-release only when that release does not already exist. Bump the package version and finalize the changelog before relying on this automation. Promote a verified pre-release to a stable release from the GitHub Releases interface when appropriate.
